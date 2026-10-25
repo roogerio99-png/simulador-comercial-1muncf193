@@ -1,1661 +1,1310 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react'
-import * as XLSX from 'xlsx'
+/**
+ * src/pages/Importador.tsx
+ *
+ * Página de Importação de Planilhas do Simulador Comercial.
+ * Espelha fielmente a UI/UX, motor de mapeamento canônico, validações,
+ * relatório de métricas, diagnóstico de erros e download de CSV do aplicativo de referência "Validação de Cadastro",
+ * direcionando exclusivamente para as coleções PRÓPRIAS deste projeto:
+ *  - 'simulador_produtos' (Simulador: Produtos Base)
+ *  - 'simulador_regras_icms' (Simulador: Regras de ICMS)
+ */
+
+import React, { useState, useRef } from 'react'
 import {
   UploadCloud,
   FileSpreadsheet,
   CheckCircle2,
   AlertTriangle,
-  RefreshCw,
-  Search,
-  Trash2,
-  Edit,
-  Plus,
-  ArrowRight,
-  Filter,
-  CheckSquare,
-  Square,
-  Layers,
-  Percent,
-  Package,
-  X,
   Loader2,
   FileText,
-  Sliders,
-  ShieldAlert,
-  ChevronLeft,
-  ChevronRight,
+  ArrowRight,
   Download,
+  ChevronRight,
+  ChevronDown,
+  Layers,
+  Info,
+  Database,
+  RefreshCw,
 } from 'lucide-react'
-import { useAuth } from '@/contexts/AuthContext'
-import { simuladorDataService } from '@/services/simuladorDataService'
-import {
-  simuladorImportadorService,
-  CAMPOS_PRODUTO_MAP,
-  CAMPOS_REGRA_ICMS_MAP,
-  type ProgressoLote,
-  type ResultadoImportacao,
-} from '@/services/simuladorImportadorService'
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-  DialogDescription,
-} from '@/components/ui/dialog'
 import { useToast } from '@/hooks/use-toast'
-import type { SimProdutoBase, SimRegraIcms } from '@/types/simulador'
+import { useAuth } from '@/contexts/AuthContext'
+import { readSpreadsheetFile, ParsedTable } from '@/lib/importer/csvParser'
+import {
+  formatarNcmCanonico,
+  extrairEmbalagemDescricao,
+  extrairFabricanteAgenciado,
+  derivarOrigemProduto,
+  normalizarUnidadeProduto,
+  derivarTipoProdutoCanonico,
+} from '@/lib/simProdutosBaseMapeamento'
+import { mapearLinhaSimRegraIcms } from '@/lib/simRegrasIcmsMapeamento'
+import {
+  importarEmLoteSimulador,
+  ItemErroImportacao,
+  ResultadoImportacaoLote,
+} from '@/services/simuladorBatchService'
+import { ScrollableTable } from '@/components/ScrollableTable'
+
+interface ZoneConfig {
+  id: string
+  sheetIndex: number
+  sheetKeywords: string[]
+  title: string
+  subtitle: string
+  targetCollection: 'simulador_produtos' | 'simulador_regras_icms'
+  expectedHeaders: string[]
+  sampleDescription: string
+}
+
+export const DROP_ZONES: ZoneConfig[] = [
+  {
+    id: 'simulador_produtos',
+    sheetIndex: 0,
+    sheetKeywords: [
+      'produtos base',
+      'produtos_base',
+      'produtosbase',
+      'produtos',
+      'itens base',
+      'simulador produtos',
+      'sheet 1',
+    ],
+    title: 'Simulador: Produtos Base',
+    subtitle: 'Cadastro de itens e insumos base para o Simulador Comercial (≈1.178 itens).',
+    targetCollection: 'simulador_produtos',
+    expectedHeaders: ['CODIGO', 'DESCRICAO', 'NCM', 'UNIDADE', 'ORIGEM', 'TIPO PRODUTO'],
+    sampleDescription: 'Popula os produtos selecionáveis no Simulador Comercial',
+  },
+  {
+    id: 'simulador_regras_icms',
+    sheetIndex: 1,
+    sheetKeywords: [
+      'regra icms',
+      'regras icms',
+      'regra_icms',
+      'regras_icms',
+      'regras icms interestaduais',
+      'regras_icms_interestaduais',
+      'icms',
+      'matriz icms',
+      'tabela icms',
+      'regrasicms',
+      'regraicms',
+      'sheet 2',
+    ],
+    title: 'Simulador: Regras de ICMS',
+    subtitle:
+      'Matriz interestadual de alíquotas e benefícios de ICMS origem → destino (≈7.291 regras).',
+    targetCollection: 'simulador_regras_icms',
+    expectedHeaders: [
+      'UF ORIGEM',
+      'UF CONTRAPARTIDA / DESTINO',
+      'OPERAÇÃO',
+      'GRTRIB',
+      'CARGA TRIB. ICMS',
+      'CARGA ICMS FINAL',
+    ],
+    sampleDescription: 'Popula a matriz interestadual de ICMS do Simulador Comercial',
+  },
+]
+
+// Normalização de strings para comparação e busca flexível
+export const normalize = (str: string) =>
+  String(str || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/g, '')
+
+// Helper para obter valor de uma coluna por palavras-chave com prioridade de exatidão
+export function getFieldValue(row: Record<string, string>, targetAliases: string[]): string {
+  const rowEntries = Object.entries(row)
+
+  // 1ª passada: match exato no nome normalizado
+  for (const alias of targetAliases) {
+    const normAlias = normalize(alias)
+    for (const [key, val] of rowEntries) {
+      if (normalize(key) === normAlias && val !== undefined && val !== null) {
+        return String(val).trim()
+      }
+    }
+  }
+
+  // 2ª passada: se o nome normalizado da coluna começa com o alias
+  for (const alias of targetAliases) {
+    const normAlias = normalize(alias)
+    for (const [key, val] of rowEntries) {
+      const normKey = normalize(key)
+      if (normKey.startsWith(normAlias) && val !== undefined && val !== null) {
+        return String(val).trim()
+      }
+    }
+  }
+
+  // 3ª passada: substring match
+  for (const alias of targetAliases) {
+    const normAlias = normalize(alias)
+    for (const [key, val] of rowEntries) {
+      const normKey = normalize(key)
+      if (normKey.includes(normAlias) && val !== undefined && val !== null) {
+        return String(val).trim()
+      }
+    }
+  }
+
+  return ''
+}
+
+// Limpeza e coerção de NCM: retira pontuação e completa 8 dígitos se veio com zeros omitidos
+export function cleanNcm(raw: string): string {
+  if (!raw) return ''
+  const digits = raw.replace(/\D/g, '')
+  if (!digits) return ''
+  if (digits.length >= 7 && digits.length <= 8) {
+    return digits.padStart(8, '0')
+  }
+  return digits
+}
+
+// Coerção numérica brasileira e internacional (trata '12,5', '12.5', '1.200,50')
+export function cleanNumber(raw: string): number {
+  if (!raw) return 0
+  let str = String(raw).trim()
+  if (!str) return 0
+
+  if (str.includes('.') && str.includes(',')) {
+    str = str.replace(/\./g, '').replace(',', '.')
+  } else if (str.includes(',')) {
+    str = str.replace(',', '.')
+  }
+
+  const cleaned = str.replace(/[^\d.-]/g, '')
+  const parsed = parseFloat(cleaned)
+  return isNaN(parsed) ? 0 : parsed
+}
 
 export function Importador() {
-  const { user, isAdmin } = useAuth()
+  const { isAdmin } = useAuth()
   const { toast } = useToast()
 
-  // Aba ativa: 'produtos' ou 'regras'
-  const [modoAtivo, setModoAtivo] = useState<'produtos' | 'regras'>('produtos')
+  const [activeZone, setActiveZone] = useState<ZoneConfig>(DROP_ZONES[0])
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [availableSheets, setAvailableSheets] = useState<string[]>([])
+  const [selectedSheet, setSelectedSheet] = useState<string>('')
+  const [parsedData, setParsedData] = useState<ParsedTable | null>(null)
+  const [fileName, setFileName] = useState<string>('')
+  const [validationError, setValidationError] = useState<string | null>(null)
 
-  // Arquivo carregado
-  const [arquivoNome, setArquivoNome] = useState<string>('')
-  const [folhasDisponiveis, setFolhasDisponiveis] = useState<string[]>([])
-  const [folhaSelecionada, setFolhaSelecionada] = useState<string>('')
-  const [linhasLidas, setLinhasLidas] = useState<Record<string, any>[]>([])
-  const [colunasPlanilha, setColunasPlanilha] = useState<string[]>([])
-  const [mapaColunas, setMapaColunas] = useState<Record<string, string>>({})
-  const [lendoArquivo, setLendoArquivo] = useState(false)
-
-  // Estado da Importação
-  const [importando, setImportando] = useState(false)
-  const [progresso, setProgresso] = useState<ProgressoLote | null>(null)
-  const [resultadoFinal, setResultadoFinal] = useState<ResultadoImportacao | null>(null)
-
-  // Lista da Coleção de Destino (para consulta, edição e exclusão)
-  const [registrosProd, setRegistrosProd] = useState<SimProdutoBase[]>([])
-  const [totalProd, setTotalProd] = useState(0)
-  const [pageProd, setPageProd] = useState(1)
-  const [totalPagesProd, setTotalPagesProd] = useState(1)
-  const [buscaProd, setBuscaProd] = useState('')
-  const [loadingProd, setLoadingProd] = useState(false)
-
-  const [registrosIcms, setRegistrosIcms] = useState<SimRegraIcms[]>([])
-  const [totalIcms, setTotalIcms] = useState(0)
-  const [pageIcms, setPageIcms] = useState(1)
-  const [totalPagesIcms, setTotalPagesIcms] = useState(1)
-  const [buscaIcms, setBuscaIcms] = useState('')
-  const [loadingIcms, setLoadingIcms] = useState(false)
-
-  // Seleção (individual e em massa)
-  const [selecionados, setSelecionados] = useState<string[]>([])
-
-  // Modal de Edição / Criação Manual
-  const [modalEdicaoAberto, setModalEdicaoAberto] = useState(false)
-  const [registroEmEdicao, setRegistroEmEdicao] = useState<any>(null)
-  const [salvandoEdicao, setSalvandoEdicao] = useState(false)
-
-  // Modal de Confirmação de Exclusão
-  const [modalExclusaoAberto, setModalExclusaoAberto] = useState(false)
-  const [itemParaExcluir, setItemParaExcluir] = useState<{ id: string; titulo: string } | null>(
-    null,
-  )
-  const [excluindoEmMassa, setExcluindoEmMassa] = useState(false)
+  // Status de importação
+  const [importing, setImporting] = useState<boolean>(false)
+  const [progress, setProgress] = useState<number>(0)
+  const [importSummary, setImportSummary] = useState<ResultadoImportacaoLote | null>(null)
+  const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string | null>(null)
+  const [expandedErrorRow, setExpandedErrorRow] = useState<number | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // --------------------------------------------------------------------------
-  // CARREGAR DADOS DAS COLEÇÕES PRÓPRIAS
-  // --------------------------------------------------------------------------
-  const carregarProdutos = useCallback(
-    async (targetPage = 1) => {
-      setLoadingProd(true)
-      try {
-        const termo = buscaProd.trim().replace(/'/g, "\\'")
-        const filter = termo
-          ? `codigo ~ '${termo}' || descricao ~ '${termo}' || ncm ~ '${termo}' || principio_ativo ~ '${termo}'`
-          : undefined
-        const res = await simuladorDataService.listarProdutos(targetPage, 20, filter, '-created')
-        setRegistrosProd(res.items)
-        setTotalProd(res.totalItems)
-        setTotalPagesProd(res.totalPages || 1)
-        setPageProd(targetPage)
-      } catch (err) {
-        console.error('Erro ao listar produtos do simulador:', err)
-        setRegistrosProd([])
-      } finally {
-        setLoadingProd(false)
-      }
-    },
-    [buscaProd],
-  )
+  const handleSelectZone = (zone: ZoneConfig) => {
+    setActiveZone(zone)
+    setValidationError(null)
+    setImportSummary(null)
+    setProgress(0)
 
-  const carregarRegrasIcms = useCallback(
-    async (targetPage = 1) => {
-      setLoadingIcms(true)
-      try {
-        const termo = buscaIcms.trim().replace(/'/g, "\\'")
-        const filter = termo
-          ? `uf_origem ~ '${termo}' || uf_destino ~ '${termo}' || grupo_tributario_codigo ~ '${termo}' || id_regra ~ '${termo}'`
-          : undefined
-        const res = await simuladorDataService.listarRegrasIcms(targetPage, 20, filter, '-created')
-        setRegistrosIcms(res.items)
-        setTotalIcms(res.totalItems)
-        setTotalPagesIcms(res.totalPages || 1)
-        setPageIcms(targetPage)
-      } catch (err) {
-        console.error('Erro ao listar regras de ICMS:', err)
-        setRegistrosIcms([])
-      } finally {
-        setLoadingIcms(false)
-      }
-    },
-    [buscaIcms],
-  )
-
-  useEffect(() => {
-    // Limpar seleção ao trocar de modo
-    setSelecionados([])
-    if (modoAtivo === 'produtos') {
-      carregarProdutos(1)
-    } else {
-      carregarRegrasIcms(1)
-    }
-  }, [modoAtivo, carregarProdutos, carregarRegrasIcms])
-
-  // --------------------------------------------------------------------------
-  // UPLOAD E LEITURA DE PLANILHA VIA SHEETJS
-  // --------------------------------------------------------------------------
-  const handleArquivoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-
-    setLendoArquivo(true)
-    setArquivoNome(file.name)
-    setResultadoFinal(null)
-    setProgresso(null)
-
-    try {
-      const buffer = await file.arrayBuffer()
-      const workbook = XLSX.read(buffer, { type: 'array' })
-      const sheetNames = workbook.SheetNames || []
-      setFolhasDisponiveis(sheetNames)
-
-      if (sheetNames.length === 0) {
-        toast({
-          title: 'Arquivo sem planilhas',
-          description: 'O arquivo enviado não contém abas válidas.',
-          variant: 'destructive',
-        })
-        setLendoArquivo(false)
-        return
-      }
-
-      // Tenta selecionar automaticamente a aba mais coerente com o modo
-      let folhaEscolhida = sheetNames[0]
-      if (modoAtivo === 'produtos') {
-        const matchProd = sheetNames.find((s) => /produto|itens|cad|base/i.test(s))
-        if (matchProd) folhaEscolhida = matchProd
-      } else {
-        const matchIcms = sheetNames.find((s) => /icms|regra|fiscal|uf/i.test(s))
-        if (matchIcms) folhaEscolhida = matchIcms
-      }
-
-      setFolhaSelecionada(folhaEscolhida)
-      processarFolha(workbook, folhaEscolhida)
-    } catch (err: any) {
-      console.error('Erro ao ler planilha:', err)
-      toast({
-        title: 'Erro ao processar planilha',
-        description: err.message || 'Formato de planilha inválido ou corrompido.',
-        variant: 'destructive',
-      })
-    } finally {
-      setLendoArquivo(false)
+    // Se já houver um arquivo XLSX aberto com múltiplas abas, troca para a aba correspondente
+    if (selectedFile && availableSheets.length > 0) {
+      carregarArquivo(selectedFile, zone.sheetIndex)
     }
   }
 
-  const processarFolha = (workbook: XLSX.WorkBook, sheetName: string) => {
-    const worksheet = workbook.Sheets[sheetName]
-    if (!worksheet) return
+  const carregarArquivo = async (file: File, sheetIndexOrName?: number | string) => {
+    setFileName(file.name)
+    setSelectedFile(file)
+    setValidationError(null)
+    setImportSummary(null)
+    setProgress(0)
 
-    // Converte para JSON com primeira linha como chave
-    const jsonData = XLSX.utils.sheet_to_json<Record<string, any>>(worksheet, {
-      defval: '',
-      blankrows: false,
+    try {
+      const targetSheet = sheetIndexOrName !== undefined ? sheetIndexOrName : activeZone.sheetIndex
+      const table = await readSpreadsheetFile(file, targetSheet)
+
+      if (table.sheetNames && table.sheetNames.length > 0) {
+        setAvailableSheets(table.sheetNames)
+        const sheetEfetiva = table.sheetName || table.sheetNames[0]
+        setSelectedSheet(sheetEfetiva)
+
+        // Sincroniza a DropZone ativa automaticamente se a aba corresponder a outro destino
+        const matchingZone = DROP_ZONES.find((z) => {
+          const normS = normalize(sheetEfetiva)
+          return z.sheetKeywords.some((k) => normS.includes(normalize(k)))
+        })
+        if (matchingZone && matchingZone.id !== activeZone.id) {
+          setActiveZone(matchingZone)
+        }
+      }
+
+      if (table.headers.length === 0 || table.rows.length === 0) {
+        throw new Error('A planilha selecionada está vazia ou não possui linhas de dados válidas.')
+      }
+
+      setParsedData(table)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Falha ao processar arquivo.'
+      setValidationError(msg)
+      setParsedData(null)
+    }
+  }
+
+  const handleFileChange = async (file: File) => {
+    await carregarArquivo(file, activeZone.sheetIndex)
+  }
+
+  const handleSheetChange = async (newSheetName: string) => {
+    if (!selectedFile) return
+    setSelectedSheet(newSheetName)
+    await carregarArquivo(selectedFile, newSheetName)
+  }
+
+  // Prepara e valida os registros antes de enviar ao banco
+  const processarLinhasParaImportacao = () => {
+    if (!parsedData || parsedData.rows.length === 0) return { validos: [], rejeitados: [] }
+
+    const targetCol = activeZone.targetCollection
+    const validos: { data: Record<string, unknown>; originalLine?: number }[] = []
+    const rejeitados: ItemErroImportacao[] = []
+
+    parsedData.rows.forEach((row, idx) => {
+      const originalLineNum = parsedData.rowIndices?.[idx] ?? idx + 2
+
+      // ------------------------------------------------------------------
+      // SIMULADOR: simulador_produtos (Aba Produtos Base)
+      // ------------------------------------------------------------------
+      if (targetCol === 'simulador_produtos') {
+        const codigo = getFieldValue(row, ['b1_cod', 'codigo', 'cod', 'id_produto', 'id', 'item'])
+
+        // Descrição do produto: B1_DESC é a descrição real do produto; NUNCA BM_DESC (que é o grupo)
+        let desc = getFieldValue(row, ['b1_desc'])
+        if (!desc) {
+          const rawDesc = getFieldValue(row, [
+            'descricao_produto',
+            'nome_produto',
+            'descricao',
+            'produto',
+            'nome',
+            'item',
+          ])
+          const bmDesc = getFieldValue(row, ['bm_desc', 'desc_grupo', 'grupo_desc'])
+          if (rawDesc && (!bmDesc || normalize(rawDesc) !== normalize(bmDesc))) {
+            desc = rawDesc
+          }
+        }
+
+        const bmDesc = getFieldValue(row, ['bm_desc', 'desc_grupo', 'grupo_desc', 'grupo'])
+        const b1Grupo = getFieldValue(row, ['b1_grupo', 'cod_grupo'])
+
+        if (!desc) {
+          desc = getFieldValue(row, ['descricao', 'produto', 'item'])
+        }
+
+        // NCM: B1_POSIPI prioridade máxima
+        const rawNcm = getFieldValue(row, [
+          'b1_posipi',
+          'posipi',
+          'ncm',
+          'ncm_oficial',
+          'classificacao_fiscal',
+        ])
+        const ncmFormatado = formatarNcmCanonico(rawNcm)
+
+        // Embalagem: coluna explícita ou dedução refinada
+        let emb = getFieldValue(row, [
+          'embalagem',
+          'tipo_embalagem',
+          'acondicionamento',
+          'recipiente',
+        ])
+        if (!emb && desc) {
+          emb = extrairEmbalagemDescricao(desc)
+        }
+
+        // Unidade
+        const rawUnid = getFieldValue(row, ['b1_um', 'unidade', 'und', 'uom', 'unid'])
+        const unid = normalizarUnidadeProduto(rawUnid, emb, desc, bmDesc, b1Grupo)
+
+        // Origem com anti-contaminação
+        const x5Origem = getFieldValue(row, [
+          'x5_tabela',
+          'x5_desc',
+          'x5',
+          'origem',
+          'procedencia',
+          'pais_origem',
+          'tipo_origem',
+        ])
+        const origem = derivarOrigemProduto(x5Origem, desc, emb)
+
+        // Fabricante
+        let fab = getFieldValue(row, ['fabricante', 'titular', 'empresa', 'fornecedor', 'marca'])
+        if (!fab && desc) {
+          fab = extrairFabricanteAgenciado(desc)
+        }
+
+        // Tipo de produto
+        let tipoProd = getFieldValue(row, ['tipo_produto', 'tipo', 'categoria', 'classe'])
+        if (!tipoProd) {
+          tipoProd = derivarTipoProdutoCanonico('', bmDesc, b1Grupo, desc)
+        }
+
+        // Grupo Tributário
+        const grTrib = getFieldValue(row, [
+          'b1_grtrib2',
+          'grtrib2',
+          'gr_trib',
+          'grtrib',
+          'grupo_tributario',
+          'grupo_tributario_codigo',
+          'cod_grtrib',
+        ])
+
+        // Coluna C: grupo_codigo (B1_GRUPO)
+        const grupoCodigo =
+          getFieldValue(row, ['b1_grupo', 'b1_grupo_original', 'grupo_codigo', 'cod_grupo']) ||
+          b1Grupo ||
+          ''
+
+        // Coluna D: grupo_descricao (BM_DESC)
+        const grupoDescricao =
+          getFieldValue(row, [
+            'bm_desc',
+            'bm_desc_original',
+            'grupo_descricao',
+            'desc_grupo',
+            'grupo_desc',
+          ]) ||
+          bmDesc ||
+          ''
+
+        // Coluna G: descricao_grupo_tributario ("DESCRIÇÃO GRUPO TRIBUTARIO")
+        let descGrupoTrib =
+          getFieldValue(row, [
+            'descrição grupo tributario',
+            'descricao grupo tributario',
+            'descrição do grupo tributário',
+            'descricao_grupo_tributario',
+            'desc_grupo_tributario',
+            'desc_grtrib',
+          ]) || ''
+        if (!descGrupoTrib && x5Origem) {
+          const x5Up = x5Origem.toUpperCase()
+          if ((x5Up.includes('ORIGEM') && x5Up.includes('(NCM')) || x5Up.includes('TRIBUTAD')) {
+            descGrupoTrib = x5Origem
+          }
+        }
+
+        // Coluna H: segmento ("SEGMENTO")
+        const segmento = getFieldValue(row, ['segmento', 'seg']) || ''
+
+        // Coluna I: comissao_padrao ("COMISSAO_PADRAO")
+        const rawComissao = getFieldValue(row, [
+          'comissao_padrao',
+          'comissao',
+          'comissao_padrao_perc',
+          'taxa_comissao',
+        ])
+        const comissaoPadrao = rawComissao ? cleanNumber(rawComissao) : 0
+
+        // Moeda e Preço
+        const moeda =
+          getFieldValue(row, ['moeda', 'currency']) || (origem === 'Importado' ? 'USD' : 'BRL')
+        const precoBase = cleanNumber(
+          getFieldValue(row, [
+            'preco_base_sugerido',
+            'preco_base',
+            'b1_prv1',
+            'prv1',
+            'preco',
+            'preco_venda',
+            'valor_unitario',
+            'valor',
+          ]),
+        )
+
+        const pa = getFieldValue(row, ['principio_ativo', 'ativo', 'ingrediente_ativo', 'molecula'])
+
+        const allText = Object.values(row).join(' ').trim()
+        if (
+          allText.toLowerCase().includes('como usar') ||
+          allText.toLowerCase().includes('instruções') ||
+          allText.toLowerCase().includes('resumo quantitativo')
+        ) {
+          rejeitados.push({
+            linhaOriginal: originalLineNum,
+            linhaLote: idx + 1,
+            motivo: 'Linha informativa ou instruções ignorada.',
+            categoria: 'Linha Informativa',
+            campo: 'Linha',
+            valor: allText.slice(0, 60),
+            dados: row,
+          })
+          return
+        }
+
+        if (!desc || /^\d+$/.test(desc.trim())) {
+          rejeitados.push({
+            linhaOriginal: originalLineNum,
+            linhaLote: idx + 1,
+            motivo: 'Descrição do produto é obrigatória e não pode ser número puro.',
+            categoria: 'Descrição Ausente ou Numérica',
+            campo: 'Descricao',
+            valor: desc || 'vazio',
+            dados: row,
+          })
+          return
+        }
+
+        validos.push({
+          originalLine: originalLineNum,
+          data: {
+            codigo: codigo || `PROD-${originalLineNum}`,
+            descricao: desc,
+            ncm: ncmFormatado,
+            unidade: unid,
+            tipo_produto: tipoProd,
+            origem: origem,
+            embalagem: emb || '',
+            principio_ativo: pa || '',
+            fabricante: fab || '',
+            moeda: moeda.toUpperCase() as 'BRL' | 'USD',
+            preco_base_sugerido: precoBase,
+            gr_trib: grTrib || '',
+            grupo_codigo: grupoCodigo || undefined,
+            grupo_descricao: grupoDescricao || undefined,
+            descricao_grupo_tributario: descGrupoTrib || undefined,
+            segmento: segmento || undefined,
+            comissao_padrao: comissaoPadrao || undefined,
+            dados_extras: {
+              ...row,
+              ...(bmDesc ? { BM_DESC_ORIGINAL: bmDesc } : {}),
+              ...(b1Grupo ? { B1_GRUPO_ORIGINAL: b1Grupo } : {}),
+            },
+          },
+        })
+      }
+
+      // ------------------------------------------------------------------
+      // SIMULADOR: simulador_regras_icms (Aba Regras de ICMS)
+      // ------------------------------------------------------------------
+      else if (targetCol === 'simulador_regras_icms') {
+        const allText = Object.values(row).join(' ').trim()
+        const lowerAll = allText.toLowerCase()
+        if (
+          lowerAll.includes('como usar') ||
+          lowerAll.includes('regras oficiais') ||
+          lowerAll.includes('instruções') ||
+          lowerAll.includes('instrucoes')
+        ) {
+          rejeitados.push({
+            linhaOriginal: originalLineNum,
+            linhaLote: idx + 1,
+            motivo: 'Linha informativa ou cabeçalho ignorado.',
+            categoria: 'Linha Informativa',
+            campo: 'Linha',
+            valor: allText.slice(0, 60),
+            dados: row,
+          })
+          return
+        }
+
+        const resMapeamento = mapearLinhaSimRegraIcms(row)
+        if (!resMapeamento.sucesso) {
+          rejeitados.push({
+            linhaOriginal: originalLineNum,
+            linhaLote: idx + 1,
+            motivo: resMapeamento.motivo,
+            categoria: 'UF Inválida',
+            campo: resMapeamento.campo,
+            valor: resMapeamento.valor,
+            dados: row,
+          })
+          return
+        }
+
+        validos.push({
+          originalLine: originalLineNum,
+          data: resMapeamento.regra as unknown as Record<string, unknown>,
+        })
+      }
     })
 
-    if (jsonData.length === 0) {
-      setLinhasLidas([])
-      setColunasPlanilha([])
-      setMapaColunas({})
+    return { validos, rejeitados }
+  }
+
+  // Executa a importação dos válidos
+  const handleExecutarImportacao = async () => {
+    if (!isAdmin) {
+      toast({
+        variant: 'destructive',
+        title: 'Acesso Restrito',
+        description: 'Apenas administradores podem importar dados para o banco.',
+      })
       return
     }
+    if (!parsedData || parsedData.rows.length === 0) return
+    setImporting(true)
+    setProgress(0)
 
-    setLinhasLidas(jsonData)
+    try {
+      const targetCol = activeZone.targetCollection
+      const { validos, rejeitados } = processarLinhasParaImportacao()
 
-    // Extrai nomes de todas as colunas presentes nas linhas
-    const colsSet = new Set<string>()
-    jsonData.forEach((row) => {
-      Object.keys(row).forEach((c) => {
-        const trimmed = c.trim()
-        if (trimmed) colsSet.add(trimmed)
+      if (validos.length === 0 && rejeitados.length === 0) {
+        throw new Error('Nenhum registro correspondente foi identificado para importação.')
+      }
+
+      // Pré-cálculo de chaves de identificação únicas no lote para detectar duplicidades intra-planilha
+      const contagemChavesPlanilha: Record<string, number> = {}
+      validos.forEach((v) => {
+        const itemData = v.data as Record<string, unknown>
+        let chave: string | null = null
+        if (targetCol === 'simulador_produtos') {
+          // Identidade composta: Código + Embalagem (variantes de embalagem convivem como produtos distintos)
+          const cod = String(itemData.codigo || '')
+            .trim()
+            .toUpperCase()
+          const emb = String(itemData.embalagem || '')
+            .trim()
+            .toUpperCase()
+          const desc = String(itemData.descricao || '')
+            .trim()
+            .toUpperCase()
+          if (cod) {
+            chave = emb ? `${cod} | ${emb}` : cod
+          } else if (desc) {
+            chave = emb ? `${desc} | ${emb}` : desc
+          }
+        } else if (targetCol === 'simulador_regras_icms') {
+          chave = (itemData.chave_origem_destino as string) || null
+        }
+        if (chave) {
+          contagemChavesPlanilha[chave] = (contagemChavesPlanilha[chave] || 0) + 1
+        }
       })
+
+      const duplicadasPlanilhaMap: Record<string, number> = {}
+      Object.entries(contagemChavesPlanilha).forEach(([k, count]) => {
+        if (count > 1) {
+          duplicadasPlanilhaMap[k] = count
+        }
+      })
+
+      // Grava no banco de dados com tratamento de rate-limit e upsert idempotente
+      let resultadoLote: ResultadoImportacaoLote = {
+        inseridos: 0,
+        atualizados: 0,
+        ignorados: 0,
+        erros: [],
+        resumoCategorias: {},
+      }
+
+      if (validos.length > 0) {
+        resultadoLote = await importarEmLoteSimulador(targetCol, validos, (processados, total) => {
+          setProgress(Math.round((processados / total) * 100))
+        })
+      }
+
+      // Consolidar contagem de duplicadas intra-planilha
+      const todasDuplicadas: Record<string, number> = { ...duplicadasPlanilhaMap }
+      if (resultadoLote.duplicadasNoLote) {
+        for (const [k, v] of Object.entries(resultadoLote.duplicadasNoLote)) {
+          todasDuplicadas[k] = Math.max(todasDuplicadas[k] || 0, v)
+        }
+      }
+
+      // Consolidar erros prévios de validação com erros retornados pelo PocketBase
+      const todosErros = [...rejeitados, ...resultadoLote.erros]
+      const categoriasConsolidadas = { ...resultadoLote.resumoCategorias }
+      rejeitados.forEach((r) => {
+        categoriasConsolidadas[r.categoria] = (categoriasConsolidadas[r.categoria] || 0) + 1
+      })
+
+      const finalResult: ResultadoImportacaoLote = {
+        inseridos: resultadoLote.inseridos,
+        atualizados: resultadoLote.atualizados ?? 0,
+        ignorados: resultadoLote.ignorados,
+        duplicadasNoLote: todasDuplicadas,
+        erros: todosErros,
+        resumoCategorias: categoriasConsolidadas,
+      }
+
+      setImportSummary(finalResult)
+
+      const totalGravados = finalResult.inseridos + (finalResult.atualizados || 0)
+      if (totalGravados > 0 || finalResult.ignorados > 0) {
+        toast({
+          title: 'Importação Concluída com Sucesso!',
+          description: `${finalResult.inseridos} registros inseridos e ${finalResult.atualizados || 0} atualizados na coleção "${targetCol}".`,
+        })
+      } else {
+        toast({
+          variant: 'destructive',
+          title: 'Atenção na Importação',
+          description: 'Nenhum registro pôde ser processado. Verifique os avisos abaixo.',
+        })
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Falha na rotina de importação.'
+      toast({ variant: 'destructive', title: 'Erro de Importação', description: msg })
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  // Exportar relatório de erros em CSV com separador ';' e BOM UTF-8
+  const exportarErrosCsv = () => {
+    if (!importSummary || importSummary.erros.length === 0) return
+
+    const headers = [
+      'Linha_Planilha',
+      'Categoria_Erro',
+      'Motivo',
+      'Campo_Problema',
+      'Valor_Identificado',
+    ]
+    const csvRows = [headers.join(';')]
+
+    importSummary.erros.forEach((e) => {
+      const row = [
+        e.linhaOriginal,
+        `"${e.categoria.replace(/"/g, '""')}"`,
+        `"${e.motivo.replace(/"/g, '""')}"`,
+        `"${(e.campo || '').replace(/"/g, '""')}"`,
+        `"${(e.valor || '').replace(/"/g, '""')}"`,
+      ]
+      csvRows.push(row.join(';'))
     })
 
-    const colsArray = Array.from(colsSet)
-    setColunasPlanilha(colsArray)
-
-    // Sugere mapeamento inteligente
-    const mapaSugerido = simuladorImportadorService.sugerirMapeamento(colsArray, modoAtivo)
-    setMapaColunas(mapaSugerido)
+    const blob = new Blob(['\uFEFF' + csvRows.join('\r\n')], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `erros_importacao_${activeZone.id}_${new Date().toISOString().slice(0, 10)}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
 
     toast({
-      title: 'Planilha carregada!',
-      description: `${jsonData.length} linhas e ${colsArray.length} colunas detectadas na aba "${sheetName}".`,
+      title: 'Download Iniciado',
+      description: 'O CSV com as linhas que apresentaram erro foi gerado.',
     })
   }
 
-  const handleTrocarFolha = (novoNomeFolha: string) => {
-    setFolhaSelecionada(novoNomeFolha)
-    if (!fileInputRef.current?.files?.[0]) return
-    const file = fileInputRef.current.files[0]
-    file.arrayBuffer().then((buffer) => {
-      const workbook = XLSX.read(buffer, { type: 'array' })
-      processarFolha(workbook, novoNomeFolha)
-    })
-  }
-
-  const atualizarMapeamentoColuna = (colunaPlanilha: string, campoDestino: string) => {
-    setMapaColunas((prev) => ({
-      ...prev,
-      [colunaPlanilha]: campoDestino,
-    }))
-  }
-
-  // --------------------------------------------------------------------------
-  // INICIAR IMPORTAÇÃO EM LOTE
-  // --------------------------------------------------------------------------
-  const executarImportacao = async () => {
-    if (!isAdmin) {
-      toast({
-        title: 'Permissão negada',
-        description: 'Apenas usuários com perfil Administrador podem executar importações.',
-        variant: 'destructive',
-      })
-      return
-    }
-
-    if (linhasLidas.length === 0) {
-      toast({
-        title: 'Nenhum dado',
-        description: 'Carregue uma planilha com linhas válidas antes de importar.',
-        variant: 'destructive',
-      })
-      return
-    }
-
-    setImportando(true)
-    setProgresso({
-      processados: 0,
-      total: linhasLidas.length,
-      criados: 0,
-      atualizados: 0,
-      falhas: 0,
-      mensagem: 'Iniciando importação...',
-    })
-
-    try {
-      let resultado: ResultadoImportacao
-
-      if (modoAtivo === 'produtos') {
-        resultado = await simuladorImportadorService.importarProdutosEmLote(
-          linhasLidas,
-          mapaColunas,
-          (p) => setProgresso(p),
-        )
-        await carregarProdutos(1)
-      } else {
-        resultado = await simuladorImportadorService.importarRegrasIcmsEmLote(
-          linhasLidas,
-          mapaColunas,
-          (p) => setProgresso(p),
-        )
-        await carregarRegrasIcms(1)
-      }
-
-      setResultadoFinal(resultado)
-      toast({
-        title: 'Importação Concluída!',
-        description: `${resultado.criados} criados, ${resultado.atualizados} atualizados, ${resultado.falhas} falhas.`,
-      })
-    } catch (err: any) {
-      console.error('Erro na importação:', err)
-      toast({
-        title: 'Falha durante a importação',
-        description: err.message || 'Ocorreu um erro ao gravar os dados.',
-        variant: 'destructive',
-      })
-    } finally {
-      setImportando(false)
-    }
-  }
-
-  // --------------------------------------------------------------------------
-  // SELEÇÃO INDIVIDUAL E EM MASSA
-  // --------------------------------------------------------------------------
-  const listaAtual = modoAtivo === 'produtos' ? registrosProd : registrosIcms
-  const todosSelecionados =
-    listaAtual.length > 0 && listaAtual.every((item) => selecionados.includes(item.id))
-
-  const toggleSelecionarTudo = () => {
-    if (todosSelecionados) {
-      const idsPagina = new Set(listaAtual.map((i) => i.id))
-      setSelecionados((prev) => prev.filter((id) => !idsPagina.has(id)))
-    } else {
-      const novos = Array.from(new Set([...selecionados, ...listaAtual.map((i) => i.id)]))
-      setSelecionados(novos)
-    }
-  }
-
-  const toggleSelecionarItem = (id: string) => {
-    setSelecionados((prev) =>
-      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id],
-    )
-  }
-
-  // --------------------------------------------------------------------------
-  // EXCLUSÃO INDIVIDUAL E EM MASSA
-  // --------------------------------------------------------------------------
-  const confirmarExclusaoItem = (id: string, titulo: string) => {
-    setItemParaExcluir({ id, titulo })
-    setExcluindoEmMassa(false)
-    setModalExclusaoAberto(true)
-  }
-
-  const confirmarExclusaoMassa = () => {
-    if (selecionados.length === 0) return
-    setItemParaExcluir(null)
-    setExcluindoEmMassa(true)
-    setModalExclusaoAberto(true)
-  }
-
-  const executarExclusao = async () => {
-    if (!isAdmin) {
-      toast({
-        title: 'Acesso Restrito',
-        description: 'Apenas Administradores podem excluir registros.',
-        variant: 'destructive',
-      })
-      return
-    }
-
-    try {
-      if (excluindoEmMassa) {
-        if (modoAtivo === 'produtos') {
-          await simuladorImportadorService.excluirProdutosEmMassa(selecionados)
-          toast({
-            title: 'Exclusão em massa concluída',
-            description: `${selecionados.length} produtos foram removidos.`,
-          })
-          setSelecionados([])
-          await carregarProdutos(pageProd)
-        } else {
-          await simuladorImportadorService.excluirRegrasIcmsEmMassa(selecionados)
-          toast({
-            title: 'Exclusão em massa concluída',
-            description: `${selecionados.length} regras de ICMS foram removidas.`,
-          })
-          setSelecionados([])
-          await carregarRegrasIcms(pageIcms)
-        }
-      } else if (itemParaExcluir) {
-        if (modoAtivo === 'produtos') {
-          await simuladorImportadorService.excluirProduto(itemParaExcluir.id)
-          toast({ title: 'Produto excluído com sucesso.' })
-          setSelecionados((prev) => prev.filter((id) => id !== itemParaExcluir.id))
-          await carregarProdutos(pageProd)
-        } else {
-          await simuladorImportadorService.excluirRegraIcms(itemParaExcluir.id)
-          toast({ title: 'Regra de ICMS excluída com sucesso.' })
-          setSelecionados((prev) => prev.filter((id) => id !== itemParaExcluir.id))
-          await carregarRegrasIcms(pageIcms)
-        }
-      }
-    } catch (err: any) {
-      console.error('Erro ao excluir:', err)
-      toast({
-        title: 'Erro ao excluir',
-        description: err.message || 'Falha ao remover registro(s).',
-        variant: 'destructive',
-      })
-    } finally {
-      setModalExclusaoAberto(false)
-      setItemParaExcluir(null)
-      setExcluindoEmMassa(false)
-    }
-  }
-
-  // --------------------------------------------------------------------------
-  // EDIÇÃO INDIVIDUAL (MODAL)
-  // --------------------------------------------------------------------------
-  const abrirModalEdicao = (item: any) => {
-    setRegistroEmEdicao({ ...item })
-    setModalEdicaoAberto(true)
-  }
-
-  const abrirModalNovo = () => {
-    if (modoAtivo === 'produtos') {
-      setRegistroEmEdicao({
-        codigo: '',
-        descricao: '',
-        ncm: '',
-        unidade: 'UN',
-        origem: 'Nacional',
-        embalagem: '',
-        principio_ativo: '',
-        fabricante: '',
-        moeda: 'BRL',
-        preco_base_sugerido: 0,
-        gr_trib: '',
-        segmento: '',
-      })
-    } else {
-      setRegistroEmEdicao({
-        uf_origem: '',
-        uf_destino: '',
-        aliquota_icms: 0,
-        reducao_base: 0,
-        aliquota_efetiva: 0,
-        diferimento: false,
-        percentual_diferimento: 0,
-        tipo_operacao: 'Interestadual',
-        grupo_tributario_codigo: '',
-        fundamentacao_legal: '',
-      })
-    }
-    setModalEdicaoAberto(true)
-  }
-
-  const salvarRegistroEmEdicao = async () => {
-    setSalvandoEdicao(true)
-    try {
-      if (modoAtivo === 'produtos') {
-        if (!registroEmEdicao.descricao) {
-          toast({
-            title: 'Campo obrigatório',
-            description: 'A Descrição do produto é obrigatória.',
-            variant: 'destructive',
-          })
-          setSalvandoEdicao(false)
-          return
-        }
-
-        if (registroEmEdicao.id) {
-          await simuladorImportadorService.atualizarProduto(registroEmEdicao.id, registroEmEdicao)
-          toast({ title: 'Produto atualizado com sucesso!' })
-        } else {
-          await simuladorImportadorService.criarProduto(registroEmEdicao)
-          toast({ title: 'Novo produto cadastrado com sucesso!' })
-        }
-        await carregarProdutos(pageProd)
-      } else {
-        if (!registroEmEdicao.uf_origem || !registroEmEdicao.uf_destino) {
-          toast({
-            title: 'Campos obrigatórios',
-            description: 'UF Origem e UF Destino são obrigatórias.',
-            variant: 'destructive',
-          })
-          setSalvandoEdicao(false)
-          return
-        }
-
-        if (registroEmEdicao.id) {
-          await simuladorImportadorService.atualizarRegraIcms(registroEmEdicao.id, registroEmEdicao)
-          toast({ title: 'Regra de ICMS atualizada com sucesso!' })
-        } else {
-          await simuladorImportadorService.criarRegraIcms(registroEmEdicao)
-          toast({ title: 'Nova regra de ICMS cadastrada com sucesso!' })
-        }
-        await carregarRegrasIcms(pageIcms)
-      }
-      setModalEdicaoAberto(false)
-      setRegistroEmEdicao(null)
-    } catch (err: any) {
-      console.error('Erro ao salvar registro:', err)
-      toast({
-        title: 'Erro ao salvar',
-        description: err.message || 'Não foi possível gravar as alterações.',
-        variant: 'destructive',
-      })
-    } finally {
-      setSalvandoEdicao(false)
-    }
-  }
+  const errosFiltrados = importSummary
+    ? selectedCategoryFilter
+      ? importSummary.erros.filter((e) => e.categoria === selectedCategoryFilter)
+      : importSummary.erros
+    : []
 
   return (
-    <div className="space-y-6 pb-12">
-      {/* Cabeçalho */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-[#E4EAE5]">
+    <div className="space-y-6 animate-in fade-in-up duration-300">
+      {/* Top Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl md:text-2xl font-bold text-[#1E2A24] flex items-center gap-2">
-            <UploadCloud className="w-6 h-6 text-[#1D6A43]" />
-            Importador & Gestão de Cadastros
-          </h1>
-          <p className="text-xs md:text-sm text-[#5D6B63] mt-0.5">
-            Importação inteligente via XLSX/CSV com mapeamento automático, seleção individual/em
-            massa, edição e exclusão.
+          <h2 className="text-xl font-bold text-[#1C2B1C] flex items-center gap-2">
+            <UploadCloud className="w-6 h-6 text-[#1B5E20]" />
+            <span>Central de Importação de Planilhas</span>
+          </h2>
+          <p className="text-xs text-[#5A6D5A] mt-0.5">
+            Importador canônico com detecção inteligente de abas Excel (.xlsx / .csv), upsert
+            idempotente e gravação direta nas coleções do Simulador Comercial (
+            <code className="text-[#1B5E20] font-semibold">simulador_produtos</code> e{' '}
+            <code className="text-[#1B5E20] font-semibold">simulador_regras_icms</code>).
           </p>
         </div>
 
         <div className="flex items-center gap-2">
-          <Button
-            onClick={abrirModalNovo}
-            size="sm"
-            className="h-8 gap-1.5 text-xs bg-[#1D6A43] hover:bg-[#155C36] text-white"
-          >
-            <Plus className="w-4 h-4" />
-            Novo Registro
-          </Button>
-
-          <Button
+          <Badge
             variant="outline"
-            size="sm"
-            onClick={() => {
-              if (modoAtivo === 'produtos') carregarProdutos(pageProd)
-              else carregarRegrasIcms(pageIcms)
-            }}
-            className="h-8 gap-1.5 text-xs border-[#E4EAE5] text-[#1E2A24]"
+            className="text-xs bg-emerald-50 text-emerald-800 border-emerald-300 px-3 py-1 flex items-center gap-1.5"
           >
-            <RefreshCw className="w-3.5 h-3.5 text-[#1D6A43]" />
-            Recarregar
-          </Button>
+            <Database className="w-3.5 h-3.5 text-[#1B5E20]" />
+            <span>Coleções Próprias do Simulador</span>
+          </Badge>
         </div>
       </div>
 
-      {/* Seletor de Modo Principal: Base de Produtos ou Regras Fiscais */}
-      <Tabs
-        value={modoAtivo}
-        onValueChange={(val: any) => {
-          setModoAtivo(val)
-          setLinhasLidas([])
-          setColunasPlanilha([])
-          setArquivoNome('')
-          setResultadoFinal(null)
-        }}
-        className="w-full"
-      >
-        <TabsList className="grid w-full sm:w-[480px] grid-cols-2">
-          <TabsTrigger value="produtos" className="gap-2 text-xs">
-            <Package className="w-4 h-4" />
-            Base de Produtos ({totalProd})
-          </TabsTrigger>
-          <TabsTrigger value="regras" className="gap-2 text-xs">
-            <Percent className="w-4 h-4" />
-            Regras Fiscais ({totalIcms})
-          </TabsTrigger>
-        </TabsList>
-      </Tabs>
-
-      {/* -------------------------------------------------------------------- */}
-      {/* SEÇÃO 1: ÁREA DE UPLOAD E MAPEAMENTO DE COLUNAS */}
-      {/* -------------------------------------------------------------------- */}
-      <Card className="rounded-2xl border-[#E4EAE5] bg-white shadow-sm overflow-hidden">
-        <CardHeader className="bg-[#FAFBF9] border-b border-[#E4EAE5] py-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-            <div>
-              <CardTitle className="text-sm font-bold text-[#1E2A24] flex items-center gap-2">
-                <FileSpreadsheet className="w-4 h-4 text-[#1D6A43]" />
-                Importar {modoAtivo === 'produtos' ? 'Base de Produtos' : 'Regras Fiscais (ICMS)'}
-              </CardTitle>
-              <CardDescription className="text-xs text-[#5D6B63]">
-                Envie uma planilha XLSX ou CSV para detecção de colunas e importação direta.
-              </CardDescription>
-            </div>
-
-            {!isAdmin && (
-              <Badge
-                variant="outline"
-                className="bg-amber-50 text-amber-800 border-amber-300 text-[10px]"
-              >
-                <ShieldAlert className="w-3 h-3 mr-1" />
-                Modo Leitura (Apenas Admin pode importar/excluir)
-              </Badge>
-            )}
-          </div>
-        </CardHeader>
-
-        <CardContent className="p-5 space-y-5">
-          {/* Caixa de Upload */}
-          <div className="flex flex-col md:flex-row items-center gap-4">
-            <div className="flex-1 w-full">
-              <label
-                htmlFor="file-upload"
-                className={`flex flex-col items-center justify-center border-2 border-dashed rounded-xl p-6 cursor-pointer transition-all ${
-                  lendoArquivo
-                    ? 'border-emerald-300 bg-emerald-50/40'
-                    : 'border-[#D1DDD5] hover:border-[#1D6A43] hover:bg-[#F7F9F6]'
-                }`}
-              >
-                <div className="flex flex-col items-center justify-center text-center">
-                  <UploadCloud className="w-8 h-8 text-[#1D6A43] mb-2" />
-                  <p className="text-xs font-semibold text-[#1E2A24]">
-                    {arquivoNome ? arquivoNome : 'Clique ou arraste a planilha XLSX ou CSV aqui'}
-                  </p>
-                  <p className="text-[11px] text-slate-500 mt-1">
-                    Compatível com planilhas Excel (.xlsx, .xls) e arquivos CSV.
-                  </p>
+      {/* 2 ZONAS DE DESTINO DO SIMULADOR */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {DROP_ZONES.map((zone) => {
+          const isSelected = activeZone.id === zone.id
+          return (
+            <div
+              key={zone.id}
+              onClick={() => handleSelectZone(zone)}
+              className={`p-4 rounded-2xl border cursor-pointer transition-all duration-200 text-left bg-white shadow-sm flex flex-col justify-between ${
+                isSelected
+                  ? 'border-[#1B5E20] ring-2 ring-emerald-600/30 shadow-md bg-emerald-50/20'
+                  : 'border-[#DCE5DC] hover:border-emerald-300 hover:bg-[#F5F7F1]/60'
+              }`}
+            >
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <div
+                    className={`w-8 h-8 rounded-xl flex items-center justify-center ${
+                      isSelected ? 'bg-[#1B5E20] text-white' : 'bg-emerald-50 text-[#1B5E20]'
+                    }`}
+                  >
+                    <FileSpreadsheet className="w-4 h-4" />
+                  </div>
+                  {isSelected && (
+                    <Badge className="bg-[#1B5E20] text-white text-[10px] py-0 px-2">
+                      Aba Ativa
+                    </Badge>
+                  )}
                 </div>
-                <input
-                  ref={fileInputRef}
-                  id="file-upload"
-                  type="file"
-                  accept=".xlsx, .xls, .csv"
-                  className="hidden"
-                  onChange={handleArquivoChange}
-                  disabled={lendoArquivo || importando}
-                />
-              </label>
-            </div>
-
-            {/* Seleção de Aba da Planilha se houver múltiplas */}
-            {folhasDisponiveis.length > 1 && (
-              <div className="w-full md:w-64 space-y-1.5 p-3.5 bg-[#FAFBF9] border border-[#E4EAE5] rounded-xl text-xs">
-                <span className="font-semibold text-[#1E2A24] text-[11px]">Aba da Planilha:</span>
-                <Select value={folhaSelecionada} onValueChange={handleTrocarFolha}>
-                  <SelectTrigger className="h-8 text-xs bg-white border-[#E4EAE5]">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {folhasDisponiveis.map((f) => (
-                      <SelectItem key={f} value={f} className="text-xs">
-                        {f}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-[10px] text-slate-500">
-                  {linhasLidas.length} linhas detectadas nesta aba.
-                </p>
+                <h3 className="font-bold text-xs text-[#1C2B1C]">{zone.title}</h3>
+                <p className="text-[11px] text-[#5A6D5A] mt-1 leading-relaxed">{zone.subtitle}</p>
               </div>
-            )}
-          </div>
 
-          {/* Painel de Mapeamento de Colunas (quando o arquivo for lido) */}
-          {colunasPlanilha.length > 0 && (
-            <div className="space-y-4 pt-4 border-t border-[#E4EAE5]">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="mt-3 pt-2 border-t border-[#F0F4F0] flex items-center justify-between text-[10px] text-[#1B5E20] font-semibold">
+                <span>Destino: {zone.targetCollection}</span>
+                <span className="text-[9px] text-[#5A6D5A] font-normal">
+                  Aba {zone.sheetIndex + 1}
+                </span>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* DROP ZONE ATIVA & CARREGADOR */}
+      <Card className="rounded-2xl border-[#DCE5DC] bg-white shadow-sm p-6">
+        <div
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault()
+            const files = e.dataTransfer.files
+            if (files && files[0]) handleFileChange(files[0])
+          }}
+          onClick={() => fileInputRef.current?.click()}
+          className="border-2 border-dashed border-[#DCE5DC] hover:border-[#1B5E20] bg-[#F5F7F1]/50 hover:bg-emerald-50/30 rounded-2xl p-8 text-center cursor-pointer transition-all duration-200 flex flex-col items-center justify-center"
+        >
+          <input
+            type="file"
+            ref={fileInputRef}
+            accept=".xlsx,.xls,.csv,.txt,.tsv"
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files && e.target.files[0]) {
+                handleFileChange(e.target.files[0])
+              }
+            }}
+          />
+
+          <div className="w-12 h-12 rounded-2xl bg-emerald-100 text-[#1B5E20] flex items-center justify-center mb-3 shadow-inner">
+            <UploadCloud className="w-6 h-6" />
+          </div>
+          <h4 className="font-bold text-sm text-[#1C2B1C]">
+            Arraste ou clique para selecionar a planilha ({activeZone.title})
+          </h4>
+          <p className="text-xs text-[#5A6D5A] mt-1 max-w-md">
+            Formatos aceitos nativamente: <strong>.xlsx (Excel)</strong> com múltiplas abas ou{' '}
+            <strong>.csv</strong> delimitado.
+          </p>
+          <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white text-[11px] text-[#5A6D5A] border border-[#DCE5DC]">
+            <FileText className="w-3.5 h-3.5 text-[#1B5E20]" />
+            <span>Colunas identificadas por aproximação e mapeamento canônico oficial</span>
+          </div>
+        </div>
+
+        {/* Mensagem de Erro ou Alerta */}
+        {validationError && (
+          <div className="mt-4 p-4 rounded-xl bg-amber-50 border border-amber-200 flex items-start gap-3 text-xs text-amber-900">
+            <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold">Aviso no processamento do arquivo:</p>
+              <p className="mt-0.5 leading-relaxed">{validationError}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Seletor de Abas para arquivos XLSX com mais de 1 aba */}
+        {availableSheets.length > 1 && (
+          <div className="mt-5 p-4 rounded-xl bg-[#F5F7F1] border border-[#DCE5DC] flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-[#1C2B1C]">
+              <Layers className="w-4 h-4 text-[#1B5E20]" />
+              <span>Abas detectadas no arquivo Excel:</span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {availableSheets.map((sheet, sIdx) => {
+                const isCurrent = sheet === selectedSheet
+                return (
+                  <Button
+                    key={sIdx}
+                    variant={isCurrent ? 'default' : 'outline'}
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      handleSheetChange(sheet)
+                    }}
+                    className={`text-xs h-7 rounded-lg transition-all ${
+                      isCurrent
+                        ? 'bg-[#1B5E20] text-white hover:bg-[#2E7D32]'
+                        : 'bg-white text-[#1C2B1C] border-[#DCE5DC] hover:border-emerald-300'
+                    }`}
+                  >
+                    <span>{sheet}</span>
+                    {sIdx === activeZone.sheetIndex && (
+                      <span className="ml-1 text-[10px] opacity-80">(Sugerida)</span>
+                    )}
+                  </Button>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Arquivo Carregado e Ações */}
+        {fileName && parsedData && (
+          <div className="mt-6 space-y-4">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 p-4 bg-emerald-50 rounded-xl border border-emerald-200">
+              <div className="flex items-center gap-2.5">
+                <FileSpreadsheet className="w-5 h-5 text-[#1B5E20]" />
                 <div>
-                  <h4 className="text-xs font-bold text-[#1E2A24] flex items-center gap-1.5">
-                    <Sliders className="w-4 h-4 text-[#1D6A43]" />
-                    Mapeamento de Colunas da Planilha para o Simulador
-                  </h4>
-                  <p className="text-[11px] text-[#5D6B63]">
-                    Revise os campos associados. As colunas não associadas serão preservadas como
-                    dados extras.
+                  <h5 className="font-bold text-xs text-[#1C2B1C]">
+                    {fileName} {selectedSheet ? `(Aba: "${selectedSheet}")` : ''}
+                  </h5>
+                  <p className="text-[11px] text-[#5A6D5A]">
+                    {parsedData.rows.length} registros identificados • {parsedData.headers.length}{' '}
+                    colunas mapeadas
                   </p>
                 </div>
+              </div>
 
+              {isAdmin ? (
+                <Button
+                  onClick={handleExecutarImportacao}
+                  disabled={importing}
+                  className="bg-[#1B5E20] hover:bg-[#2E7D32] text-white rounded-xl text-xs font-semibold px-5 h-10 shadow-md flex items-center gap-2"
+                >
+                  {importing ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Importando ({progress}%)...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Confirmar e Importar no Banco</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </>
+                  )}
+                </Button>
+              ) : (
                 <div className="flex items-center gap-2">
-                  <Badge variant="outline" className="text-[10px] bg-slate-50 text-slate-700">
-                    {colunasPlanilha.length} colunas na planilha
-                  </Badge>
                   <Badge
                     variant="outline"
-                    className="text-[10px] bg-emerald-50 text-emerald-800 border-emerald-300"
+                    className="text-xs text-amber-700 bg-amber-50 border-amber-300 py-1.5 px-3"
                   >
-                    {linhasLidas.length} linhas para importar
+                    Modo Somente Leitura (Apenas Admin pode importar)
                   </Badge>
                 </div>
-              </div>
+              )}
+            </div>
 
-              {/* Grid de Seletores de Mapeamento */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 max-h-60 overflow-y-auto p-3 bg-[#FAFBF9] border border-[#E4EAE5] rounded-xl text-xs">
-                {colunasPlanilha.map((col) => {
-                  const campoDestino = mapaColunas[col] || '__ignorar__'
-                  const listaCampos =
-                    modoAtivo === 'produtos' ? CAMPOS_PRODUTO_MAP : CAMPOS_REGRA_ICMS_MAP
+            {/* Barra de Progresso durante a carga */}
+            {importing && (
+              <div className="space-y-1.5 animate-in fade-in">
+                <div className="flex justify-between text-xs text-[#5A6D5A]">
+                  <span>Gravando registros no PocketBase com controle de vazão...</span>
+                  <span className="font-bold text-[#1B5E20]">{progress}%</span>
+                </div>
+                <Progress value={progress} className="h-2 rounded-full [&>div]:bg-[#1B5E20]" />
+              </div>
+            )}
+
+            {/* RELATÓRIO DE EXECUÇÃO DETALHADO POR MOTIVO DE ERRO */}
+            {importSummary && (
+              <div className="p-5 rounded-2xl bg-white border border-[#DCE5DC] shadow-sm space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#F0F4F0] pb-3">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-5 h-5 text-[#2E7D32]" />
+                    <div>
+                      <h4 className="font-bold text-sm text-[#1C2B1C]">
+                        Relatório Detalhado de Importação
+                      </h4>
+                      <p className="text-[11px] text-[#5A6D5A]">
+                        Concluído na coleção própria{' '}
+                        <code className="bg-[#F5F7F1] px-1.5 py-0.5 rounded text-[#1B5E20]">
+                          {activeZone.targetCollection}
+                        </code>
+                      </p>
+                    </div>
+                  </div>
+
+                  {importSummary.erros.length > 0 && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={exportarErrosCsv}
+                      className="text-xs h-8 rounded-xl border-[#DCE5DC] text-[#1C2B1C] hover:bg-emerald-50 hover:text-[#1B5E20] hover:border-emerald-300 flex items-center gap-1.5"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Baixar Linhas com Erro (.CSV)</span>
+                    </Button>
+                  )}
+                </div>
+
+                {/* Cards de Métricas */}
+                {(() => {
+                  const duplicadasEntradas = Object.entries(importSummary.duplicadasNoLote || {})
+                  const totalLinhasDuplicadas = duplicadasEntradas.reduce(
+                    (acc, [, count]) => acc + (count - 1),
+                    0,
+                  )
+                  const totalCodigosDuplicados = duplicadasEntradas.length
+                  const totalAtualizadosGerais = importSummary.atualizados ?? 0
+                  const atualizadosPreExistentes = Math.max(
+                    0,
+                    totalAtualizadosGerais - totalLinhasDuplicadas,
+                  )
 
                   return (
-                    <div
-                      key={col}
-                      className="p-2.5 rounded-lg border border-[#E4EAE5] bg-white space-y-1.5"
-                    >
-                      <div className="flex items-center justify-between">
-                        <span
-                          className="font-semibold text-[#1E2A24] truncate text-[11px]"
-                          title={col}
-                        >
-                          {col}
-                        </span>
-                        <ArrowRight className="w-3 h-3 text-slate-400 shrink-0 mx-1" />
+                    <div className="space-y-3">
+                      <div
+                        className={`grid grid-cols-1 ${
+                          totalCodigosDuplicados > 0 ? 'sm:grid-cols-4' : 'sm:grid-cols-3'
+                        } gap-3 text-xs`}
+                      >
+                        <div className="p-3 rounded-xl bg-emerald-50 text-emerald-900 border border-emerald-200">
+                          <span className="block text-[11px] text-emerald-700 font-medium">
+                            Novos Inseridos
+                          </span>
+                          <strong className="text-xl font-bold text-emerald-800">
+                            {importSummary.inseridos}
+                          </strong>
+                          <span className="block text-[10px] text-emerald-600 mt-0.5">
+                            Gravados com sucesso na coleção
+                          </span>
+                        </div>
+
+                        {totalCodigosDuplicados > 0 ? (
+                          <>
+                            <div className="p-3 rounded-xl bg-amber-50 text-amber-900 border border-amber-200">
+                              <span className="block text-[11px] text-amber-700 font-medium">
+                                Duplicadas na Planilha
+                              </span>
+                              <strong className="text-xl font-bold text-amber-800">
+                                {totalLinhasDuplicadas}
+                              </strong>
+                              <span className="block text-[10px] text-amber-600 mt-0.5">
+                                {totalCodigosDuplicados}{' '}
+                                {totalCodigosDuplicados === 1
+                                  ? activeZone.targetCollection === 'simulador_produtos'
+                                    ? 'chave repetida'
+                                    : 'chave repetida'
+                                  : 'chaves repetidas'}{' '}
+                                • prevalece última
+                              </span>
+                            </div>
+
+                            <div className="p-3 rounded-xl bg-blue-50 text-blue-900 border border-blue-200">
+                              <span className="block text-[11px] text-blue-700 font-medium">
+                                Atualizados Pré-Existentes
+                              </span>
+                              <strong className="text-xl font-bold text-blue-800">
+                                {atualizadosPreExistentes}
+                              </strong>
+                              <span className="block text-[10px] text-blue-600 mt-0.5">
+                                Já existiam antes da importação
+                              </span>
+                            </div>
+                          </>
+                        ) : (
+                          <div className="p-3 rounded-xl bg-blue-50 text-blue-900 border border-blue-200">
+                            <span className="block text-[11px] text-blue-700 font-medium">
+                              Atualizados / Enriquecidos
+                            </span>
+                            <strong className="text-xl font-bold text-blue-800">
+                              {totalAtualizadosGerais}
+                            </strong>
+                            <span className="block text-[10px] text-blue-600 mt-0.5">
+                              Dados complementados por idempotência
+                            </span>
+                          </div>
+                        )}
+
+                        <div className="p-3 rounded-xl bg-slate-50 text-slate-900 border border-slate-200">
+                          <span className="block text-[11px] text-slate-700 font-medium">
+                            {importSummary.erros.length > 0
+                              ? 'Erros / Linhas Recusadas'
+                              : 'Linhas Recusadas / Ignoradas'}
+                          </span>
+                          <strong
+                            className={`text-xl font-bold ${importSummary.erros.length > 0 ? 'text-red-800' : 'text-slate-800'}`}
+                          >
+                            {importSummary.erros.length}
+                          </strong>
+                          <span className="block text-[10px] text-slate-600 mt-0.5">
+                            {importSummary.erros.length === 0
+                              ? '0 perdas • 100% gravado'
+                              : 'Ver diagnóstico abaixo'}
+                          </span>
+                        </div>
                       </div>
 
-                      <Select
-                        value={campoDestino}
-                        onValueChange={(val) => atualizarMapeamentoColuna(col, val)}
-                      >
-                        <SelectTrigger className="h-7 text-[11px] border-[#E4EAE5]">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="__ignorar__" className="text-[11px] text-slate-400">
-                            (Ignorar / Dados extras)
-                          </SelectItem>
-                          {listaCampos.map((c) => (
-                            <SelectItem key={c.key} value={c.key} className="text-[11px]">
-                              {c.label} {c.required ? '*' : ''}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      {/* Nota Explicativa e Listagem de Códigos Duplicados na Planilha */}
+                      {totalCodigosDuplicados > 0 && (
+                        <div className="p-3.5 rounded-xl bg-amber-50/70 border border-amber-200 text-xs text-amber-950 space-y-2">
+                          <div className="flex items-start gap-2">
+                            <Info className="w-4 h-4 text-amber-700 mt-0.5 flex-shrink-0" />
+                            <div>
+                              <p className="font-semibold text-amber-900">
+                                Transparência de Duplicatas na Planilha (Intra-Arquivo):
+                              </p>
+                              <p className="text-amber-800 text-[11px] mt-0.5 leading-relaxed">
+                                {activeZone.targetCollection === 'simulador_produtos' ? (
+                                  <>
+                                    Identificação por chave composta{' '}
+                                    <strong>Código + Embalagem</strong>. Variantes de embalagem do
+                                    mesmo código convivem como produtos distintos na base. Linhas
+                                    com a <strong>mesma combinação de código e embalagem</strong>{' '}
+                                    são atualizadas (upsert idempotente pela última ocorrência),
+                                    garantindo <strong>0 perdas</strong> de dados.
+                                  </>
+                                ) : (
+                                  <>
+                                    Chave identificadora (UF Origem + UF Destino) duplicada na
+                                    planilha <strong>NÃO é perda</strong>. O sistema realizou a
+                                    gravação mantendo uma única vez na base com os dados da{' '}
+                                    <strong>última ocorrência</strong> (upsert idempotente). Houve{' '}
+                                    <strong>0 perdas</strong> de registros.
+                                  </>
+                                )}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="pt-1.5 border-t border-amber-200/60 flex flex-wrap items-center gap-1.5">
+                            <span className="text-[11px] font-semibold text-amber-900">
+                              {activeZone.targetCollection === 'simulador_produtos'
+                                ? `Itens com repetição exata [Código + Embalagem] (${totalCodigosDuplicados}):`
+                                : `Chaves com repetição identificadas (${totalCodigosDuplicados}):`}
+                            </span>
+                            {duplicadasEntradas.slice(0, 15).map(([itemKey, count]) => (
+                              <Badge
+                                key={itemKey}
+                                variant="outline"
+                                className="bg-white text-amber-900 border-amber-300 font-mono text-[10px] px-2 py-0.5"
+                              >
+                                {itemKey}{' '}
+                                <span className="text-amber-600 ml-1 font-sans">({count}x)</span>
+                              </Badge>
+                            ))}
+                            {duplicadasEntradas.length > 15 && (
+                              <span className="text-[10px] text-amber-700">
+                                + {duplicadasEntradas.length - 15} outras
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )
-                })}
-              </div>
+                })()}
 
-              {/* Pré-visualização das 3 Primeiras Linhas */}
-              <div className="space-y-1.5">
-                <span className="text-[11px] font-semibold text-slate-600">
-                  Pré-visualização dos dados (amostra inicial):
-                </span>
-                <div className="overflow-x-auto border border-[#E4EAE5] rounded-xl bg-white max-h-40">
-                  <table className="w-full text-[11px] text-left">
-                    <thead className="bg-[#FAFBF9] border-b border-[#E4EAE5] text-slate-600">
-                      <tr>
-                        {colunasPlanilha.slice(0, 7).map((c) => (
-                          <th
-                            key={c}
-                            className="py-1.5 px-2.5 font-semibold truncate max-w-[150px]"
+                {/* Resumo por Categoria de Erro (Chips clicáveis) */}
+                {Object.keys(importSummary.resumoCategorias).length > 0 && (
+                  <div className="space-y-2 pt-1">
+                    <div className="flex items-center justify-between text-xs text-[#5A6D5A]">
+                      <span className="font-semibold text-[#1C2B1C]">
+                        Diagnóstico por Categoria (clique para filtrar):
+                      </span>
+                      {selectedCategoryFilter && (
+                        <button
+                          onClick={() => setSelectedCategoryFilter(null)}
+                          className="text-[11px] text-[#1B5E20] hover:underline"
+                        >
+                          Limpar filtro (ver todos)
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {Object.entries(importSummary.resumoCategorias).map(([cat, qtd]) => {
+                        const isFiltered = selectedCategoryFilter === cat
+                        return (
+                          <button
+                            key={cat}
+                            onClick={() => setSelectedCategoryFilter(isFiltered ? null : cat)}
+                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs transition-all ${
+                              isFiltered
+                                ? 'bg-red-600 text-white shadow-sm ring-2 ring-red-400'
+                                : 'bg-red-50 text-red-900 border border-red-200 hover:bg-red-100'
+                            }`}
                           >
-                            {c}
+                            <AlertTriangle className="w-3.5 h-3.5 text-red-500" />
+                            <span className="font-semibold">{cat}:</span>
+                            <span className="bg-white/80 text-red-800 text-[10px] font-bold px-1.5 py-0.2 rounded-full">
+                              {qtd} {qtd === 1 ? 'linha' : 'linhas'}
+                            </span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Tabela Interativa de Linhas com Erro */}
+                {errosFiltrados.length > 0 && (
+                  <div className="space-y-2 pt-2 border-t border-[#F0F4F0]">
+                    <div className="flex items-center justify-between text-xs text-[#5A6D5A]">
+                      <span className="font-semibold text-[#1C2B1C]">
+                        Detalhamento das Linhas Problemáticas ({errosFiltrados.length} exibidas):
+                      </span>
+                      <span className="text-[11px]">
+                        Clique na linha para expandir os dados brutos
+                      </span>
+                    </div>
+
+                    <div className="border border-red-200 rounded-xl overflow-hidden text-[11px]">
+                      <ScrollableTable autoFitHeight={false} maxHeight="260px" minHeight="160px">
+                        <table className="w-full text-left">
+                          <thead className="sticky top-0 z-20 bg-red-50 border-b border-red-200 text-red-900 shadow-[0_1px_0_0_#fecaca]">
+                            <tr>
+                              <th className="py-2 px-3 font-semibold w-16">Linha</th>
+                              <th className="py-2 px-3 font-semibold">Categoria</th>
+                              <th className="py-2 px-3 font-semibold">Motivo da Recusa</th>
+                              <th className="py-2 px-3 font-semibold">Campo / Valor</th>
+                              <th className="py-2 px-2 text-center w-8"></th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-red-100 bg-white">
+                            {errosFiltrados.map((item, errIdx) => {
+                              const isExpanded = expandedErrorRow === errIdx
+                              return (
+                                <React.Fragment key={errIdx}>
+                                  <tr
+                                    onClick={() => setExpandedErrorRow(isExpanded ? null : errIdx)}
+                                    className="hover:bg-red-50/40 cursor-pointer transition-colors"
+                                  >
+                                    <td className="py-2 px-3 font-mono font-bold text-red-700">
+                                      {item.linhaOriginal}
+                                    </td>
+                                    <td className="py-2 px-3 font-medium text-red-900">
+                                      {item.categoria}
+                                    </td>
+                                    <td className="py-2 px-3 text-red-800">{item.motivo}</td>
+                                    <td
+                                      className="py-2 px-3 text-red-700 max-w-[260px]"
+                                      title={
+                                        item.campo
+                                          ? `${item.campo}: ${item.valor || 'vazio'}`
+                                          : item.motivo
+                                      }
+                                    >
+                                      {item.campo && (
+                                        <div className="mb-0.5">
+                                          <Badge
+                                            variant="outline"
+                                            className="text-[9px] px-1.5 py-0 border-red-300 text-red-800 bg-red-50/50 font-mono"
+                                          >
+                                            {item.campo}
+                                          </Badge>
+                                        </div>
+                                      )}
+                                      {item.valor ? (
+                                        <span
+                                          className="font-mono text-[10px] text-red-600 block truncate"
+                                          title={item.valor}
+                                        >
+                                          {item.valor}
+                                        </span>
+                                      ) : (
+                                        <span className="text-red-400 italic text-[10px]">
+                                          {item.campo ? 'valor não especificado' : '—'}
+                                        </span>
+                                      )}
+                                    </td>
+                                    <td className="py-2 px-2 text-center text-red-500">
+                                      {isExpanded ? (
+                                        <ChevronDown className="w-4 h-4" />
+                                      ) : (
+                                        <ChevronRight className="w-4 h-4" />
+                                      )}
+                                    </td>
+                                  </tr>
+                                  {isExpanded && (
+                                    <tr className="bg-[#F5F7F1]">
+                                      <td colSpan={5} className="p-3 text-[10px] text-[#1C2B1C]">
+                                        <div className="font-semibold text-[#1B5E20] mb-1">
+                                          Conteúdo bruto extraído da Linha {item.linhaOriginal}:
+                                        </div>
+                                        <pre className="bg-white p-2 rounded-lg border border-[#DCE5DC] overflow-x-auto text-xs font-mono">
+                                          {JSON.stringify(item.dados, null, 2)}
+                                        </pre>
+                                      </td>
+                                    </tr>
+                                  )}
+                                </React.Fragment>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                      </ScrollableTable>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Preview das primeiras 10 linhas identificadas */}
+            <div className="space-y-2 pt-2">
+              <h5 className="font-bold text-xs text-[#1C2B1C] flex items-center justify-between">
+                <span>Pré-visualização do Mapeamento (10 primeiras linhas de dados)</span>
+                <span className="text-[11px] text-[#5A6D5A] font-normal">
+                  Total de colunas: {parsedData.headers.length}
+                </span>
+              </h5>
+              <div className="border border-[#DCE5DC] rounded-xl overflow-hidden">
+                <ScrollableTable autoFitHeight={false} maxHeight="300px" minHeight="200px">
+                  <table className="w-full text-[11px]">
+                    <thead className="sticky top-0 z-20 bg-[#F5F7F1] shadow-[0_1px_0_0_#DCE5DC]">
+                      <tr className="bg-[#F5F7F1] border-b border-[#DCE5DC] text-left text-[#5A6D5A]">
+                        <th className="py-2 px-3 font-semibold text-center w-12">#</th>
+                        {parsedData.headers.map((h, i) => (
+                          <th key={i} className="py-2 px-3 font-semibold whitespace-nowrap">
+                            {h}
                           </th>
                         ))}
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-100 font-mono text-[10px]">
-                      {linhasLidas.slice(0, 3).map((r, i) => (
-                        <tr key={i}>
-                          {colunasPlanilha.slice(0, 7).map((c) => (
-                            <td key={c} className="py-1.5 px-2.5 truncate max-w-[150px]">
-                              {String(r[c] ?? '')}
+                    <tbody className="divide-y divide-[#F0F4F0]">
+                      {parsedData.rows.slice(0, 10).map((r, rowIdx) => (
+                        <tr key={rowIdx} className="hover:bg-[#F5F7F1]/40">
+                          <td className="py-1.5 px-3 text-center text-[#5A6D5A] font-mono text-[10px]">
+                            {parsedData.rowIndices?.[rowIdx] ?? rowIdx + 2}
+                          </td>
+                          {parsedData.headers.map((h, colIdx) => (
+                            <td
+                              key={colIdx}
+                              className="py-1.5 px-3 max-w-[220px] truncate text-[#1C2B1C]"
+                              title={r[h] || ''}
+                            >
+                              {r[h] || '—'}
                             </td>
                           ))}
                         </tr>
                       ))}
                     </tbody>
                   </table>
-                </div>
+                </ScrollableTable>
               </div>
-
-              {/* Ação de Iniciar Importação */}
-              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
-                <div className="text-xs text-slate-500">
-                  A importação utilizará upsert idempotente (atualiza registros existentes e
-                  cadastra novos).
-                </div>
-
-                <Button
-                  onClick={executarImportacao}
-                  disabled={importando || !isAdmin}
-                  className="w-full sm:w-auto h-9 text-xs bg-[#1D6A43] hover:bg-[#155C36] text-white gap-2 font-semibold shadow-sm"
-                >
-                  {importando ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Gravando no Banco de Dados...
-                    </>
-                  ) : (
-                    <>
-                      <UploadCloud className="w-4 h-4" />
-                      Importar {linhasLidas.length} Registros para o Simulador
-                    </>
-                  )}
-                </Button>
-              </div>
-
-              {/* Barra de Progresso em Tempo Real */}
-              {progresso && (
-                <div className="p-4 bg-[#F7F9F6] border border-[#E4EAE5] rounded-xl space-y-2">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-semibold text-[#1E2A24] flex items-center gap-1.5">
-                      <Loader2 className="w-3.5 h-3.5 animate-spin text-[#1D6A43]" />
-                      {progresso.mensagem}
-                    </span>
-                    <span className="font-mono font-bold text-[#1D6A43]">
-                      {Math.round((progresso.processados / progresso.total) * 100)}%
-                    </span>
-                  </div>
-                  <Progress
-                    value={Math.round((progresso.processados / progresso.total) * 100)}
-                    className="h-2 bg-slate-200"
-                  />
-                  <div className="flex items-center gap-4 text-[11px] text-slate-600 pt-1">
-                    <span>
-                      Processados: {progresso.processados} / {progresso.total}
-                    </span>
-                    <span className="text-emerald-700 font-semibold">
-                      Criados: {progresso.criados}
-                    </span>
-                    <span className="text-sky-700 font-semibold">
-                      Atualizados: {progresso.atualizados}
-                    </span>
-                    {progresso.falhas > 0 && (
-                      <span className="text-red-600 font-semibold">Falhas: {progresso.falhas}</span>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Resumo Final da Importação */}
-              {resultadoFinal && (
-                <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl space-y-2">
-                  <div className="flex items-center gap-2 text-emerald-900 font-bold text-xs">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                    Resumo do Processamento:
-                  </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                    <div className="p-2 bg-white rounded-lg border border-emerald-100">
-                      <span className="text-slate-500 text-[10px]">Total Linhas:</span>
-                      <p className="font-bold text-[#1E2A24]">{resultadoFinal.total}</p>
-                    </div>
-                    <div className="p-2 bg-white rounded-lg border border-emerald-100">
-                      <span className="text-emerald-600 text-[10px]">Novos Criados:</span>
-                      <p className="font-bold text-emerald-700">{resultadoFinal.criados}</p>
-                    </div>
-                    <div className="p-2 bg-white rounded-lg border border-emerald-100">
-                      <span className="text-sky-600 text-[10px]">Atualizados:</span>
-                      <p className="font-bold text-sky-700">{resultadoFinal.atualizados}</p>
-                    </div>
-                    <div className="p-2 bg-white rounded-lg border border-emerald-100">
-                      <span className="text-red-500 text-[10px]">Falhas / Ignorados:</span>
-                      <p className="font-bold text-red-600">{resultadoFinal.falhas}</p>
-                    </div>
-                  </div>
-
-                  {resultadoFinal.erros.length > 0 && (
-                    <div className="pt-2 text-[11px] text-red-700 space-y-1">
-                      <span className="font-semibold">
-                        Primeiras ocorrências de inconsistência:
-                      </span>
-                      <ul className="list-disc list-inside space-y-0.5 text-[10px]">
-                        {resultadoFinal.erros.map((e, idx) => (
-                          <li key={idx}>{e}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* -------------------------------------------------------------------- */}
-      {/* SEÇÃO 2: TABELA DE REGISTROS CADASTRADOS, SELEÇÃO E AÇÕES EM MASSA */}
-      {/* -------------------------------------------------------------------- */}
-      <Card className="rounded-2xl border-[#E4EAE5] bg-white shadow-sm overflow-hidden flex flex-col">
-        {/* Barra de Filtros e Ações em Massa */}
-        <div className="p-4 bg-[#FAFBF9] border-b border-[#E4EAE5] flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
-          <div className="flex items-center gap-2 flex-1">
-            <div className="relative flex-1 max-w-md">
-              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <Input
-                value={modoAtivo === 'produtos' ? buscaProd : buscaIcms}
-                onChange={(e) =>
-                  modoAtivo === 'produtos'
-                    ? setBuscaProd(e.target.value)
-                    : setBuscaIcms(e.target.value)
-                }
-                placeholder={
-                  modoAtivo === 'produtos'
-                    ? 'Buscar produto por código, descrição ou NCM...'
-                    : 'Buscar regra por UF origem, destino ou GrTrib...'
-                }
-                className="pl-9 text-xs h-9 bg-white border-[#E4EAE5]"
-              />
-            </div>
-
-            <Button
-              size="sm"
-              onClick={() => {
-                if (modoAtivo === 'produtos') carregarProdutos(1)
-                else carregarRegrasIcms(1)
-              }}
-              className="h-9 text-xs bg-[#1D6A43] hover:bg-[#155C36] text-white"
-            >
-              Filtrar
-            </Button>
-          </div>
-
-          {/* Botão de Excluir Selecionados em Massa */}
-          {selecionados.length > 0 && (
-            <div className="flex items-center gap-2">
-              <Badge
-                variant="outline"
-                className="bg-emerald-50 text-[#1D6A43] border-emerald-300 text-xs"
-              >
-                {selecionados.length} selecionado(s)
-              </Badge>
-
-              {isAdmin ? (
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={confirmarExclusaoMassa}
-                  className="h-9 text-xs gap-1.5 bg-red-600 hover:bg-red-700 text-white"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  Excluir Selecionados ({selecionados.length})
-                </Button>
-              ) : (
-                <span className="text-[11px] text-slate-400 italic">
-                  (Exclusão requer perfil Admin)
-                </span>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Tabela de Produtos */}
-        {modoAtivo === 'produtos' && (
-          <div className="overflow-x-auto min-h-[360px]">
-            <table className="w-full text-xs text-left">
-              <thead className="bg-[#FAFBF9] border-b border-[#E4EAE5] text-[#5D6B63] font-semibold uppercase tracking-wider text-[11px]">
-                <tr>
-                  <th className="py-3 px-3 w-10 text-center">
-                    <button
-                      type="button"
-                      onClick={toggleSelecionarTudo}
-                      className="text-slate-500 hover:text-[#1D6A43] transition-colors"
-                      title={todosSelecionados ? 'Desmarcar todos' : 'Selecionar todos'}
-                    >
-                      {todosSelecionados ? (
-                        <CheckSquare className="w-4 h-4 text-[#1D6A43]" />
-                      ) : (
-                        <Square className="w-4 h-4 text-slate-400" />
-                      )}
-                    </button>
-                  </th>
-                  <th className="py-3 px-3">Código</th>
-                  <th className="py-3 px-3 min-w-[220px]">Descrição Comercial</th>
-                  <th className="py-3 px-3">NCM</th>
-                  <th className="py-3 px-3">Origem</th>
-                  <th className="py-3 px-3">Embalagem</th>
-                  <th className="py-3 px-3">GrTrib</th>
-                  <th className="py-3 px-3 text-right">Preço Sugerido</th>
-                  <th className="py-3 px-3 text-center">Ações</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {loadingProd ? (
-                  <tr>
-                    <td colSpan={9} className="py-12 text-center text-slate-500">
-                      <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-[#1D6A43]" />
-                      Carregando produtos cadastrados...
-                    </td>
-                  </tr>
-                ) : registrosProd.length === 0 ? (
-                  <tr>
-                    <td colSpan={9} className="py-12 text-center text-slate-500">
-                      Nenhum produto cadastrado no momento.
-                    </td>
-                  </tr>
-                ) : (
-                  registrosProd.map((p) => {
-                    const isSelected = selecionados.includes(p.id)
-                    return (
-                      <tr
-                        key={p.id}
-                        className={`hover:bg-[#F7F9F6] transition-colors ${
-                          isSelected ? 'bg-emerald-50/50' : ''
-                        }`}
-                      >
-                        <td className="py-2.5 px-3 text-center">
-                          <button
-                            type="button"
-                            onClick={() => toggleSelecionarItem(p.id)}
-                            className="text-slate-400 hover:text-[#1D6A43]"
-                          >
-                            {isSelected ? (
-                              <CheckSquare className="w-4 h-4 text-[#1D6A43]" />
-                            ) : (
-                              <Square className="w-4 h-4 text-slate-300" />
-                            )}
-                          </button>
-                        </td>
-                        <td className="py-2.5 px-3 font-mono font-semibold text-[#1D6A43]">
-                          {p.codigo || '—'}
-                        </td>
-                        <td className="py-2.5 px-3 font-medium text-[#1E2A24]">{p.descricao}</td>
-                        <td className="py-2.5 px-3 font-mono text-slate-600">{p.ncm || '—'}</td>
-                        <td className="py-2.5 px-3">
-                          <Badge
-                            variant="outline"
-                            className={`text-[10px] ${
-                              p.origem === 'Importado'
-                                ? 'bg-amber-50 text-amber-800 border-amber-300'
-                                : 'bg-emerald-50 text-emerald-800 border-emerald-300'
-                            }`}
-                          >
-                            {p.origem || 'Nacional'}
-                          </Badge>
-                        </td>
-                        <td className="py-2.5 px-3 text-slate-600">{p.embalagem || '—'}</td>
-                        <td className="py-2.5 px-3 font-mono text-slate-600">{p.gr_trib || '—'}</td>
-                        <td className="py-2.5 px-3 text-right font-mono font-semibold text-[#1E2A24]">
-                          {(p.preco_base_sugerido || 0).toLocaleString('pt-BR', {
-                            style: 'currency',
-                            currency: 'BRL',
-                          })}
-                        </td>
-                        <td className="py-2.5 px-3 text-center">
-                          <div className="flex items-center justify-center gap-1">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => abrirModalEdicao(p)}
-                              className="h-7 w-7 text-slate-500 hover:text-[#1D6A43] hover:bg-emerald-50"
-                              title="Editar registro"
-                            >
-                              <Edit className="w-3.5 h-3.5" />
-                            </Button>
-                            {isAdmin && (
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() =>
-                                  confirmarExclusaoItem(
-                                    p.id,
-                                    `Produto ${p.codigo || ''} - ${p.descricao}`,
-                                  )
-                                }
-                                className="h-7 w-7 text-slate-500 hover:text-red-600 hover:bg-red-50"
-                                title="Excluir registro"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </Button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    )
-                  })
-                )}
-              </tbody>
-            </table>
           </div>
         )}
-
-        {/* Tabela de Regras Fiscais (ICMS) */}
-        {modoAtivo === 'regras' && (
-          <div className="overflow-x-auto min-h-[360px]">
-            <table className="w-full text-xs text-left">
-              <thead className="bg-[#FAFBF9] border-b border-[#E4EAE5] text-[#5D6B63] font-semibold uppercase tracking-wider text-[11px]">
-                <tr>
-                  <th className="py-3 px-3 w-10 text-center">
-                    <button
-                      type="button"
-                      onClick={toggleSelecionarTudo}
-                      className="text-slate-500 hover:text-[#1D6A43] transition-colors"
-                      title={todosSelecionados ? 'Desmarcar todos' : 'Selecionar todos'}
-                    >
-                      {todosSelecionados ? (
-                        <CheckSquare className="w-4 h-4 text-[#1D6A43]" />
-                      ) : (
-                        <Square className="w-4 h-4 text-slate-400" />
-                      )}
-                    </button>
-                  </th>
-                  <th className="py-3 px-3">Origem → Destino</th>
-                  <th className="py-3 px-3">Alíquota ICMS</th>
-                  <th className="py-3 px-3">Redução Base</th>
-                  <th className="py-3 px-3">Alíquota Efetiva</th>
-                  <th className="py-3 px-3">Diferimento</th>
-                  <th className="py-3 px-3">GrTrib</th>
-                  <th className="py-3 px-3">ID Regra</th>
-                  <th className="py-3 px-3 text-center">Ações</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {loadingIcms ? (
-                  <tr>
-                    <td colSpan={9} className="py-12 text-center text-slate-500">
-                      <Loader2 className="w-6 h-6 animate-spin mx-auto mb-2 text-[#1D6A43]" />
-                      Carregando regras de ICMS...
-                    </td>
-                  </tr>
-                ) : registrosIcms.length === 0 ? (
-                  <tr>
-                    <td colSpan={9} className="py-12 text-center text-slate-500">
-                      Nenhuma regra de ICMS cadastrada.
-                    </td>
-                  </tr>
-                ) : (
-                  registrosIcms.map((r) => {
-                    const isSelected = selecionados.includes(r.id)
-                    return (
-                      <tr
-                        key={r.id}
-                        className={`hover:bg-[#F7F9F6] transition-colors ${
-                          isSelected ? 'bg-emerald-50/50' : ''
-                        }`}
-                      >
-                        <td className="py-2.5 px-3 text-center">
-                          <button
-                            type="button"
-                            onClick={() => toggleSelecionarItem(r.id)}
-                            className="text-slate-400 hover:text-[#1D6A43]"
-                          >
-                            {isSelected ? (
-                              <CheckSquare className="w-4 h-4 text-[#1D6A43]" />
-                            ) : (
-                              <Square className="w-4 h-4 text-slate-300" />
-                            )}
-                          </button>
-                        </td>
-                        <td className="py-2.5 px-3 font-mono font-bold text-[#1E2A24]">
-                          {r.uf_origem} → {r.uf_destino}
-                        </td>
-                        <td className="py-2.5 px-3 font-semibold text-[#1E2A24]">
-                          {r.aliquota_icms}%
-                        </td>
-                        <td className="py-2.5 px-3 text-slate-600">
-                          {r.reducao_base ? `${r.reducao_base}%` : '0%'}
-                        </td>
-                        <td className="py-2.5 px-3 font-semibold text-[#1D6A43]">
-                          {r.aliquota_efetiva !== undefined ? `${r.aliquota_efetiva}%` : '—'}
-                        </td>
-                        <td className="py-2.5 px-3">
-                          {r.diferimento ? (
-                            <Badge
-                              variant="outline"
-                              className="text-[10px] bg-emerald-50 text-emerald-800 border-emerald-300"
-                            >
-                              SIM {r.percentual_diferimento ? `(${r.percentual_diferimento}%)` : ''}
-                            </Badge>
-                          ) : (
-                            <span className="text-slate-400">Não</span>
-                          )}
-                        </td>
-                        <td className="py-2.5 px-3 font-mono text-slate-600">
-                          {r.grupo_tributario_codigo || 'Geral'}
-                        </td>
-                        <td className="py-2.5 px-3 font-mono text-[10px] text-slate-500">
-                          {r.id_regra || '—'}
-                        </td>
-                        <td className="py-2.5 px-3 text-center">
-                          <div className="flex items-center justify-center gap-1">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => abrirModalEdicao(r)}
-                              className="h-7 w-7 text-slate-500 hover:text-[#1D6A43] hover:bg-emerald-50"
-                              title="Editar regra"
-                            >
-                              <Edit className="w-3.5 h-3.5" />
-                            </Button>
-                            {isAdmin && (
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() =>
-                                  confirmarExclusaoItem(
-                                    r.id,
-                                    `Regra ICMS ${r.uf_origem} → ${r.uf_destino} (${r.id_regra || ''})`,
-                                  )
-                                }
-                                className="h-7 w-7 text-slate-500 hover:text-red-600 hover:bg-red-50"
-                                title="Excluir regra"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </Button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    )
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {/* Rodapé e Paginação da Coleção */}
-        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 p-3.5 border-t border-[#E4EAE5] bg-[#FAFBF9] text-xs text-[#5D6B63]">
-          <div>
-            Mostrando {modoAtivo === 'produtos' ? registrosProd.length : registrosIcms.length} de{' '}
-            {modoAtivo === 'produtos' ? totalProd : totalIcms} registros
-          </div>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                if (modoAtivo === 'produtos') carregarProdutos(Math.max(1, pageProd - 1))
-                else carregarRegrasIcms(Math.max(1, pageIcms - 1))
-              }}
-              disabled={
-                (modoAtivo === 'produtos' ? pageProd <= 1 : pageIcms <= 1) ||
-                loadingProd ||
-                loadingIcms
-              }
-              className="h-7 text-xs border-[#E4EAE5]"
-            >
-              <ChevronLeft className="w-3.5 h-3.5 mr-1" />
-              Anterior
-            </Button>
-            <span className="font-semibold px-2 text-[#1E2A24]">
-              {modoAtivo === 'produtos' ? pageProd : pageIcms} /{' '}
-              {modoAtivo === 'produtos' ? totalPagesProd : totalPagesIcms}
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                if (modoAtivo === 'produtos')
-                  carregarProdutos(Math.min(totalPagesProd, pageProd + 1))
-                else carregarRegrasIcms(Math.min(totalPagesIcms, pageIcms + 1))
-              }}
-              disabled={
-                (modoAtivo === 'produtos'
-                  ? pageProd >= totalPagesProd
-                  : pageIcms >= totalPagesIcms) ||
-                loadingProd ||
-                loadingIcms
-              }
-              className="h-7 text-xs border-[#E4EAE5]"
-            >
-              Próxima
-              <ChevronRight className="w-3.5 h-3.5 ml-1" />
-            </Button>
-          </div>
-        </div>
       </Card>
-
-      {/* -------------------------------------------------------------------- */}
-      {/* MODAL DE EDIÇÃO OU NOVO REGISTRO */}
-      {/* -------------------------------------------------------------------- */}
-      <Dialog open={modalEdicaoAberto} onOpenChange={setModalEdicaoAberto}>
-        <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="text-base font-bold text-[#1E2A24] flex items-center gap-2">
-              <Edit className="w-4 h-4 text-[#1D6A43]" />
-              {registroEmEdicao?.id ? 'Alterar Cadastro' : 'Novo Cadastro'} —{' '}
-              {modoAtivo === 'produtos' ? 'Produto' : 'Regra Fiscal ICMS'}
-            </DialogTitle>
-            <DialogDescription className="text-xs text-slate-500">
-              Preencha os campos de acordo com as colunas da base cadastral.
-            </DialogDescription>
-          </DialogHeader>
-
-          {registroEmEdicao && modoAtivo === 'produtos' && (
-            <div className="space-y-3 py-2 text-xs">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="font-semibold text-slate-700">Código do Produto:</label>
-                  <Input
-                    value={registroEmEdicao.codigo || ''}
-                    onChange={(e) =>
-                      setRegistroEmEdicao({ ...registroEmEdicao, codigo: e.target.value })
-                    }
-                    placeholder="ex: 000018"
-                    className="h-8 text-xs font-mono"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="font-semibold text-slate-700">NCM:</label>
-                  <Input
-                    value={registroEmEdicao.ncm || ''}
-                    onChange={(e) =>
-                      setRegistroEmEdicao({ ...registroEmEdicao, ncm: e.target.value })
-                    }
-                    placeholder="ex: 3808.91.99"
-                    className="h-8 text-xs font-mono"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <label className="font-semibold text-slate-700">Descrição Comercial *:</label>
-                <Input
-                  value={registroEmEdicao.descricao || ''}
-                  onChange={(e) =>
-                    setRegistroEmEdicao({ ...registroEmEdicao, descricao: e.target.value })
-                  }
-                  placeholder="Nome comercial do produto"
-                  className="h-8 text-xs font-medium"
-                />
-              </div>
-
-              <div className="grid grid-cols-3 gap-3">
-                <div className="space-y-1">
-                  <label className="font-semibold text-slate-700">Origem:</label>
-                  <Select
-                    value={registroEmEdicao.origem || 'Nacional'}
-                    onValueChange={(val) =>
-                      setRegistroEmEdicao({ ...registroEmEdicao, origem: val })
-                    }
-                  >
-                    <SelectTrigger className="h-8 text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Nacional">Nacional</SelectItem>
-                      <SelectItem value="Importado">Importado</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-1">
-                  <label className="font-semibold text-slate-700">Unidade:</label>
-                  <Input
-                    value={registroEmEdicao.unidade || 'UN'}
-                    onChange={(e) =>
-                      setRegistroEmEdicao({ ...registroEmEdicao, unidade: e.target.value })
-                    }
-                    placeholder="L, KG, UN..."
-                    className="h-8 text-xs"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="font-semibold text-slate-700">Embalagem:</label>
-                  <Input
-                    value={registroEmEdicao.embalagem || ''}
-                    onChange={(e) =>
-                      setRegistroEmEdicao({ ...registroEmEdicao, embalagem: e.target.value })
-                    }
-                    placeholder="4X5L, 20L..."
-                    className="h-8 text-xs"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="font-semibold text-slate-700">Princípio Ativo:</label>
-                  <Input
-                    value={registroEmEdicao.principio_ativo || ''}
-                    onChange={(e) =>
-                      setRegistroEmEdicao({
-                        ...registroEmEdicao,
-                        principio_ativo: e.target.value,
-                      })
-                    }
-                    placeholder="Ingrediente ativo"
-                    className="h-8 text-xs"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="font-semibold text-slate-700">Fabricante:</label>
-                  <Input
-                    value={registroEmEdicao.fabricante || ''}
-                    onChange={(e) =>
-                      setRegistroEmEdicao({ ...registroEmEdicao, fabricante: e.target.value })
-                    }
-                    placeholder="Empresa titular"
-                    className="h-8 text-xs"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-3 gap-3">
-                <div className="space-y-1">
-                  <label className="font-semibold text-slate-700">GrTrib:</label>
-                  <Input
-                    value={registroEmEdicao.gr_trib || ''}
-                    onChange={(e) =>
-                      setRegistroEmEdicao({ ...registroEmEdicao, gr_trib: e.target.value })
-                    }
-                    placeholder="001, 002..."
-                    className="h-8 text-xs font-mono"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="font-semibold text-slate-700">Segmento:</label>
-                  <Input
-                    value={registroEmEdicao.segmento || ''}
-                    onChange={(e) =>
-                      setRegistroEmEdicao({ ...registroEmEdicao, segmento: e.target.value })
-                    }
-                    placeholder="CROP, FERTILIZER..."
-                    className="h-8 text-xs"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="font-semibold text-slate-700">Preço Base (R$):</label>
-                  <Input
-                    type="number"
-                    step="0.01"
-                    value={registroEmEdicao.preco_base_sugerido ?? 0}
-                    onChange={(e) =>
-                      setRegistroEmEdicao({
-                        ...registroEmEdicao,
-                        preco_base_sugerido: parseFloat(e.target.value) || 0,
-                      })
-                    }
-                    className="h-8 text-xs font-mono"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {registroEmEdicao && modoAtivo === 'regras' && (
-            <div className="space-y-3 py-2 text-xs">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="font-semibold text-slate-700">UF Origem *:</label>
-                  <Input
-                    value={registroEmEdicao.uf_origem || ''}
-                    maxLength={2}
-                    onChange={(e) =>
-                      setRegistroEmEdicao({
-                        ...registroEmEdicao,
-                        uf_origem: e.target.value.toUpperCase(),
-                      })
-                    }
-                    placeholder="SP"
-                    className="h-8 text-xs font-mono uppercase"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="font-semibold text-slate-700">UF Destino *:</label>
-                  <Input
-                    value={registroEmEdicao.uf_destino || ''}
-                    maxLength={2}
-                    onChange={(e) =>
-                      setRegistroEmEdicao({
-                        ...registroEmEdicao,
-                        uf_destino: e.target.value.toUpperCase(),
-                      })
-                    }
-                    placeholder="MT"
-                    className="h-8 text-xs font-mono uppercase"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-3 gap-3">
-                <div className="space-y-1">
-                  <label className="font-semibold text-slate-700">Alíquota ICMS (%):</label>
-                  <Input
-                    type="number"
-                    step="0.01"
-                    value={registroEmEdicao.aliquota_icms ?? 0}
-                    onChange={(e) => {
-                      const aliq = parseFloat(e.target.value) || 0
-                      const red = registroEmEdicao.reducao_base || 0
-                      setRegistroEmEdicao({
-                        ...registroEmEdicao,
-                        aliquota_icms: aliq,
-                        aliquota_efetiva: Number((aliq * (1 - red / 100)).toFixed(2)),
-                      })
-                    }}
-                    className="h-8 text-xs font-mono"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="font-semibold text-slate-700">Redução de Base (%):</label>
-                  <Input
-                    type="number"
-                    step="0.01"
-                    value={registroEmEdicao.reducao_base ?? 0}
-                    onChange={(e) => {
-                      const red = parseFloat(e.target.value) || 0
-                      const aliq = registroEmEdicao.aliquota_icms || 0
-                      setRegistroEmEdicao({
-                        ...registroEmEdicao,
-                        reducao_base: red,
-                        aliquota_efetiva: Number((aliq * (1 - red / 100)).toFixed(2)),
-                      })
-                    }}
-                    className="h-8 text-xs font-mono"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="font-semibold text-slate-700">Alíquota Efetiva (%):</label>
-                  <Input
-                    type="number"
-                    step="0.01"
-                    value={registroEmEdicao.aliquota_efetiva ?? 0}
-                    onChange={(e) =>
-                      setRegistroEmEdicao({
-                        ...registroEmEdicao,
-                        aliquota_efetiva: parseFloat(e.target.value) || 0,
-                      })
-                    }
-                    className="h-8 text-xs font-mono"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="font-semibold text-slate-700">Código GrTrib:</label>
-                  <Input
-                    value={registroEmEdicao.grupo_tributario_codigo || ''}
-                    onChange={(e) =>
-                      setRegistroEmEdicao({
-                        ...registroEmEdicao,
-                        grupo_tributario_codigo: e.target.value,
-                      })
-                    }
-                    placeholder="001, 002..."
-                    className="h-8 text-xs font-mono"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="font-semibold text-slate-700">ID da Regra:</label>
-                  <Input
-                    value={registroEmEdicao.id_regra || ''}
-                    onChange={(e) =>
-                      setRegistroEmEdicao({ ...registroEmEdicao, id_regra: e.target.value })
-                    }
-                    placeholder="BAACInterestadual001"
-                    className="h-8 text-xs font-mono"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-1">
-                <label className="font-semibold text-slate-700">Fundamentação Legal:</label>
-                <Input
-                  value={registroEmEdicao.fundamentacao_legal || ''}
-                  onChange={(e) =>
-                    setRegistroEmEdicao({
-                      ...registroEmEdicao,
-                      fundamentacao_legal: e.target.value,
-                    })
-                  }
-                  placeholder="ex: Convênio ICMS 100/97"
-                  className="h-8 text-xs"
-                />
-              </div>
-            </div>
-          )}
-
-          <DialogFooter className="pt-2 border-t border-slate-100">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setModalEdicaoAberto(false)}
-              className="h-8 text-xs border-slate-200"
-            >
-              Cancelar
-            </Button>
-            <Button
-              size="sm"
-              onClick={salvarRegistroEmEdicao}
-              disabled={salvandoEdicao}
-              className="h-8 text-xs bg-[#1D6A43] hover:bg-[#155C36] text-white"
-            >
-              {salvandoEdicao ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : null}
-              Salvar Alterações
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* -------------------------------------------------------------------- */}
-      {/* MODAL DE CONFIRMAÇÃO DE EXCLUSÃO */}
-      {/* -------------------------------------------------------------------- */}
-      <Dialog open={modalExclusaoAberto} onOpenChange={setModalExclusaoAberto}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle className="text-base font-bold text-red-600 flex items-center gap-2">
-              <AlertTriangle className="w-5 h-5 text-red-600" />
-              Confirmar Exclusão
-            </DialogTitle>
-            <DialogDescription className="text-xs text-slate-600 pt-2">
-              {excluindoEmMassa ? (
-                <>
-                  Você tem certeza que deseja excluir permanentemente os{' '}
-                  <strong className="text-red-700">
-                    {selecionados.length} registros selecionados
-                  </strong>{' '}
-                  da coleção{' '}
-                  {modoAtivo === 'produtos' ? 'simulador_produtos' : 'simulador_regras_icms'}? Esta
-                  ação não pode ser desfeita.
-                </>
-              ) : (
-                <>
-                  Você tem certeza que deseja excluir o registro{' '}
-                  <strong className="text-red-700">{itemParaExcluir?.titulo}</strong>?
-                </>
-              )}
-            </DialogDescription>
-          </DialogHeader>
-
-          <DialogFooter className="pt-3 border-t border-slate-100">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setModalExclusaoAberto(false)}
-              className="h-8 text-xs"
-            >
-              Cancelar
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={executarExclusao}
-              className="h-8 text-xs bg-red-600 hover:bg-red-700 text-white"
-            >
-              Confirmar e Excluir
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }
