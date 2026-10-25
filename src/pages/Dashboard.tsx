@@ -15,7 +15,6 @@ import {
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { simuladorDataService } from '@/services/simuladorDataService'
-import { readOnlyData } from '@/lib/readOnlyClient'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -70,12 +69,14 @@ export function Dashboard() {
       const icmsRes = await simuladorDataService.listarRegrasIcms(1, 1)
       setTotalRegrasIcms(icmsRes.totalItems || 0)
 
-      // 3. Aprovação de cadastro da base mestre
+      // 3. Aprovação de cadastro da base mestre local
       try {
-        const mestreTotalRes = await readOnlyData.getList('base_mestre', 1, 1)
-        const mestreAprovadosRes = await readOnlyData.getList('base_mestre', 1, 1, {
-          filter: "status_validacao = 'aprovado'",
-        })
+        const mestreTotalRes = await simuladorDataService.listarBaseMestre(1, 1)
+        const mestreAprovadosRes = await simuladorDataService.listarBaseMestre(
+          1,
+          1,
+          "status_validacao = 'aprovado'",
+        )
         const totalMestre = mestreTotalRes.totalItems || 0
         const totalAprov = mestreAprovadosRes.totalItems || 0
         const pct = totalMestre > 0 ? Math.round((totalAprov / totalMestre) * 100) : 100

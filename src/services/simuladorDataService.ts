@@ -1,4 +1,4 @@
-import { readOnlyData } from '@/lib/readOnlyClient'
+import pb from '@/lib/pocketbase/client'
 import type {
   SimProdutoBase,
   SimRegraIcms,
@@ -8,25 +8,37 @@ import type {
   BaseMestreProduto,
 } from '@/types/simulador'
 
+/**
+ * Serviço de dados do Simulador Comercial.
+ * Consome 100% das coleções locais e próprias deste app:
+ * - simulador_produtos
+ * - simulador_regras_icms
+ * - simulador_base_mestre
+ * - simulador_parametrizacao_fiscal
+ * - simulador_regras_embalagem
+ * - simulador_principios_ativos
+ *
+ * Autenticação e RLS são restritas a simulador_comercial_users.
+ */
 export const simuladorDataService = {
-  // Produtos Base (sim_produtos_base)
+  // Produtos Próprios do Simulador (simulador_produtos)
   async listarProdutos(page = 1, perPage = 20, filter?: string, sort = 'codigo') {
-    return readOnlyData.getList<SimProdutoBase>('sim_produtos_base', page, perPage, {
+    return pb.collection('simulador_produtos').getList<SimProdutoBase>(page, perPage, {
       filter,
       sort,
     })
   },
 
   async buscarProdutoPorCodigo(codigo: string) {
-    const res = await readOnlyData.getList<SimProdutoBase>('sim_produtos_base', 1, 1, {
+    const res = await pb.collection('simulador_produtos').getList<SimProdutoBase>(1, 1, {
       filter: `codigo = '${codigo.replace(/'/g, "\\'")}'`,
     })
     return res.items[0] || null
   },
 
-  // Regras de ICMS (sim_regras_icms)
+  // Regras de ICMS Próprias do Simulador (simulador_regras_icms)
   async listarRegrasIcms(page = 1, perPage = 25, filter?: string, sort = 'uf_origem,uf_destino') {
-    return readOnlyData.getList<SimRegraIcms>('sim_regras_icms', page, perPage, {
+    return pb.collection('simulador_regras_icms').getList<SimRegraIcms>(page, perPage, {
       filter,
       sort,
     })
@@ -38,7 +50,7 @@ export const simuladorDataService = {
     const grLimpo = (grTrib || '').trim()
 
     if (grLimpo) {
-      const resExata = await readOnlyData.getList<SimRegraIcms>('sim_regras_icms', 1, 1, {
+      const resExata = await pb.collection('simulador_regras_icms').getList<SimRegraIcms>(1, 1, {
         filter: `uf_origem = '${orig}' && uf_destino = '${dest}' && grupo_tributario_codigo = '${grLimpo.replace(/'/g, "\\'")}'`,
         sort: '-created',
       })
@@ -47,19 +59,21 @@ export const simuladorDataService = {
       }
     }
 
-    const resFallback = await readOnlyData.getList<SimRegraIcms>('sim_regras_icms', 1, 1, {
+    const resFallback = await pb.collection('simulador_regras_icms').getList<SimRegraIcms>(1, 1, {
       filter: `uf_origem = '${orig}' && uf_destino = '${dest}'`,
       sort: '-created',
     })
     return resFallback.items[0] || null
   },
 
-  // Parametrização Fiscal (parametrizacao_fiscal)
+  // Parametrização Fiscal Local (simulador_parametrizacao_fiscal)
   async listarParametrizacaoFiscal(page = 1, perPage = 30, filter?: string, sort = 'ncm') {
-    return readOnlyData.getList<ParametrizacaoFiscal>('parametrizacao_fiscal', page, perPage, {
-      filter,
-      sort,
-    })
+    return pb
+      .collection('simulador_parametrizacao_fiscal')
+      .getList<ParametrizacaoFiscal>(page, perPage, {
+        filter,
+        sort,
+      })
   },
 
   async obterParametrizacaoPorNcm(ncm: string) {
@@ -67,43 +81,42 @@ export const simuladorDataService = {
     if (!cleanNcm) return null
 
     // Tenta formato sem pontuação ou com pontuação
-    const res = await readOnlyData.getList<ParametrizacaoFiscal>('parametrizacao_fiscal', 1, 1, {
-      filter: `ncm ~ '${cleanNcm}'`,
-    })
+    const res = await pb
+      .collection('simulador_parametrizacao_fiscal')
+      .getList<ParametrizacaoFiscal>(1, 1, {
+        filter: `ncm ~ '${cleanNcm}'`,
+      })
     return res.items[0] || null
   },
 
-  // Base Mestre (base_mestre)
+  // Base Mestre Local (simulador_base_mestre)
   async listarBaseMestre(page = 1, perPage = 20, filter?: string, sort = '-created') {
-    return readOnlyData.getList<BaseMestreProduto>('base_mestre', page, perPage, {
+    return pb.collection('simulador_base_mestre').getList<BaseMestreProduto>(page, perPage, {
       filter,
       sort,
     })
   },
 
-  // Regras NCM / Embalagem
+  // Regras NCM / Embalagem Local (simulador_regras_embalagem)
   async listarRegrasNcmEmbalagem(page = 1, perPage = 25, filter?: string, sort = 'ncm') {
-    return readOnlyData.getList<RegraNcmEmbalagem>('regras_ncm_embalagem', page, perPage, {
+    return pb.collection('simulador_regras_embalagem').getList<RegraNcmEmbalagem>(page, perPage, {
       filter,
       sort,
     })
   },
 
-  // Princípios Ativos
+  // Princípios Ativos Local (simulador_principios_ativos)
   async listarPrincipiosAtivos(
     page = 1,
     perPage = 25,
     filter?: string,
     sort = 'principio_ativo_chave',
   ) {
-    return readOnlyData.getList<DicionarioPrincipioAtivo>(
-      'dicionario_principios_ativos',
-      page,
-      perPage,
-      {
+    return pb
+      .collection('simulador_principios_ativos')
+      .getList<DicionarioPrincipioAtivo>(page, perPage, {
         filter,
         sort,
-      },
-    )
+      })
   },
 }

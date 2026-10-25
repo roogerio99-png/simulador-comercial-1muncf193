@@ -8,12 +8,19 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 
 export function Login() {
-  const { login } = useAuth()
+  const { user, isLoading: authLoading, login } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
 
   // Buscar redirecionamento prévio se houver
   const from = (location.state as any)?.from?.pathname || '/dashboard'
+
+  // Se já estiver autenticado, redireciona diretamente ao dashboard
+  React.useEffect(() => {
+    if (!authLoading && user) {
+      navigate('/dashboard', { replace: true })
+    }
+  }, [user, authLoading, navigate])
 
   // Parâmetro de prefill via link de primeiro acesso
   const searchParams = new URLSearchParams(location.search)

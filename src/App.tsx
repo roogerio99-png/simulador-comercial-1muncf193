@@ -35,7 +35,14 @@ export default function App() {
           <Route path="/confirm-email-change" element={<ConfirmEmailChange />} />
 
           {/* Redirecionamento raiz */}
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
+          <Route
+            path="/"
+            element={
+              <ProtectedRoute>
+                <Navigate to="/dashboard" replace />
+              </ProtectedRoute>
+            }
+          />
 
           {/* Rotas Protegidas dentro do Layout Principal */}
           <Route
