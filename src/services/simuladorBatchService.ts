@@ -29,6 +29,8 @@ export interface ItemErroImportacao {
 export interface ResultadoImportacaoLote {
   inseridos: number
   atualizados?: number
+  atualizadosIntraLote?: number
+  atualizadosPreExistentes?: number
   ignorados: number
   duplicadasNoLote?: Record<string, number>
   erros: ItemErroImportacao[]
@@ -47,6 +49,8 @@ export async function importarEmLoteSimulador<T extends Record<string, unknown>>
 ): Promise<ResultadoImportacaoLote> {
   let inseridos = 0
   let atualizados = 0
+  let atualizadosIntraLote = 0
+  let atualizadosPreExistentes = 0
   let ignorados = 0
   let resultadoLoteDuplicadas: Record<string, number> | undefined
   const erros: ItemErroImportacao[] = []
@@ -104,6 +108,8 @@ export async function importarEmLoteSimulador<T extends Record<string, unknown>>
       sucesso: boolean
       inseridos: number
       atualizados: number
+      atualizadosIntraLote?: number
+      atualizadosPreExistentes?: number
       ignorados: number
       duplicadasNoLote?: Record<string, number>
       erros: ItemErroImportacao[]
@@ -171,6 +177,8 @@ export async function importarEmLoteSimulador<T extends Record<string, unknown>>
             const resFallback = await importarChunkClientSide(targetCol, chunk, offset)
             inseridos += resFallback.inseridos
             atualizados += resFallback.atualizados
+            atualizadosIntraLote += resFallback.atualizadosIntraLote || 0
+            atualizadosPreExistentes += resFallback.atualizadosPreExistentes || 0
             ignorados += resFallback.ignorados
             resFallback.erros.forEach((e) => {
               erros.push(e)
@@ -209,6 +217,8 @@ export async function importarEmLoteSimulador<T extends Record<string, unknown>>
       const resFallback = await importarChunkClientSide(targetCol, chunk, offset)
       inseridos += resFallback.inseridos
       atualizados += resFallback.atualizados
+      atualizadosIntraLote += resFallback.atualizadosIntraLote || 0
+      atualizadosPreExistentes += resFallback.atualizadosPreExistentes || 0
       ignorados += resFallback.ignorados
       resFallback.erros.forEach((err) => {
         erros.push(err)
@@ -218,6 +228,8 @@ export async function importarEmLoteSimulador<T extends Record<string, unknown>>
     } else if (respostaChunk) {
       inseridos += respostaChunk.inseridos || 0
       atualizados += respostaChunk.atualizados || 0
+      atualizadosIntraLote += respostaChunk.atualizadosIntraLote || 0
+      atualizadosPreExistentes += respostaChunk.atualizadosPreExistentes || 0
       ignorados += respostaChunk.ignorados || 0
 
       if (respostaChunk.duplicadasNoLote) {
@@ -247,6 +259,8 @@ export async function importarEmLoteSimulador<T extends Record<string, unknown>>
   return {
     inseridos,
     atualizados,
+    atualizadosIntraLote,
+    atualizadosPreExistentes,
     ignorados,
     duplicadasNoLote: resultadoLoteDuplicadas,
     erros,
@@ -265,13 +279,18 @@ async function importarChunkClientSide<T extends Record<string, unknown>>(
 ): Promise<{
   inseridos: number
   atualizados: number
+  atualizadosIntraLote: number
+  atualizadosPreExistentes: number
   ignorados: number
   erros: ItemErroImportacao[]
 }> {
   let inseridos = 0
   let atualizados = 0
+  let atualizadosIntraLote = 0
+  let atualizadosPreExistentes = 0
   let ignorados = 0
   const erros: ItemErroImportacao[] = []
+  const criadosLocalmente = new Set<string>()
 
   const CONCORRENCIA = 3
   let indice = 0
@@ -298,6 +317,7 @@ async function importarChunkClientSide<T extends Record<string, unknown>>(
             continue
           }
 
+          // Segurança: se tem código, busca EXCLUSIVAMENTE por código (+embalagem se houver)
           if (codigo) {
             let filter = `codigo = '${codigo.replace(/'/g, "\\'")}'`
             if (emb) {
@@ -310,9 +330,8 @@ async function importarChunkClientSide<T extends Record<string, unknown>>(
             if (res && res.items.length > 0) {
               existenteId = res.items[0].id
             }
-          }
-
-          if (!existenteId && desc) {
+          } else if (desc) {
+            // Fallback por descrição SÓ se a linha não tiver código
             let filter = `descricao = '${desc.replace(/'/g, "\\'")}'`
             if (emb) {
               filter += ` && embalagem = '${emb.replace(/'/g, "\\'")}'`
@@ -329,9 +348,17 @@ async function importarChunkClientSide<T extends Record<string, unknown>>(
           if (existenteId) {
             await pb.collection('simulador_produtos').update(existenteId, itemData)
             atualizados++
+            if (criadosLocalmente.has(existenteId)) {
+              atualizadosIntraLote++
+            } else {
+              atualizadosPreExistentes++
+            }
           } else {
-            await pb.collection('simulador_produtos').create(itemData)
+            const rec = await pb.collection('simulador_produtos').create(itemData)
             inseridos++
+            if (rec && rec.id) {
+              criadosLocalmente.add(rec.id)
+            }
           }
         } else {
           // simulador_regras_icms
@@ -372,7 +399,8 @@ async function importarChunkClientSide<T extends Record<string, unknown>>(
             }
           }
 
-          if (!existenteId) {
+          // Fallback por UF+GrTrib só é usado se NÃO houver id_regra
+          if (!existenteId && !idRegra) {
             let filter = `uf_origem = '${ufOrig}' && uf_destino = '${ufDest}'`
             if (grTrib) {
               filter += ` && grupo_tributario_codigo = '${grTrib.replace(/'/g, "\\'")}'`
@@ -389,9 +417,17 @@ async function importarChunkClientSide<T extends Record<string, unknown>>(
           if (existenteId) {
             await pb.collection('simulador_regras_icms').update(existenteId, itemData)
             atualizados++
+            if (criadosLocalmente.has(existenteId)) {
+              atualizadosIntraLote++
+            } else {
+              atualizadosPreExistentes++
+            }
           } else {
-            await pb.collection('simulador_regras_icms').create(itemData)
+            const rec = await pb.collection('simulador_regras_icms').create(itemData)
             inseridos++
+            if (rec && rec.id) {
+              criadosLocalmente.add(rec.id)
+            }
           }
         }
       } catch (err: unknown) {
@@ -412,5 +448,12 @@ async function importarChunkClientSide<T extends Record<string, unknown>>(
   const workers = Array.from({ length: Math.min(CONCORRENCIA, chunk.length) }, () => worker())
   await Promise.all(workers)
 
-  return { inseridos, atualizados, ignorados, erros }
+  return {
+    inseridos,
+    atualizados,
+    atualizadosIntraLote,
+    atualizadosPreExistentes,
+    ignorados,
+    erros,
+  }
 }

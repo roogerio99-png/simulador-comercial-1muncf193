@@ -63,6 +63,8 @@ routerAdd('POST', '/backend/v1/simulador/importar-lote', (e) => {
       sucesso: true,
       inseridos: 0,
       atualizados: 0,
+      atualizadosIntraLote: 0,
+      atualizadosPreExistentes: 0,
       ignorados: 0,
       duplicadasNoLote: {},
       erros: [],
@@ -72,10 +74,15 @@ routerAdd('POST', '/backend/v1/simulador/importar-lote', (e) => {
 
   let inseridos = 0
   let atualizados = 0
+  let atualizadosIntraLote = 0
+  let atualizadosPreExistentes = 0
   let ignorados = 0
   const erros = []
   const duplicadasNoLote = {}
   const resumoCategorias = {}
+
+  // Registro de IDs criados durante esta execução (para distinguir duplicada intra-lote de pré-existente)
+  const idsCriadosNestaExecucao = {}
 
   // 4. Execução protegida por coleção alvo (apenas literais fixos)
   if (collectionTarget === 'simulador_produtos') {
@@ -96,7 +103,7 @@ routerAdd('POST', '/backend/v1/simulador/importar-lote', (e) => {
           continue
         }
 
-        // Chave de identificação no lote para auditoria de duplicatas intra-arquivo
+        // Chave de identificação composta: Código + Embalagem (ou Descrição + Embalagem se não houver código)
         const chaveDeduplicacao = codigo
           ? emb
             ? codigo.toUpperCase() + ' | ' + emb.toUpperCase()
@@ -110,7 +117,11 @@ routerAdd('POST', '/backend/v1/simulador/importar-lote', (e) => {
         }
 
         try {
-          // Idempotência: busca se o registro já existe no banco
+          // Idempotência estrita: busca se o registro já existe no banco.
+          // REGRA DE SEGURANÇA CONTRA PERDA DE DADOS:
+          // Se a linha possui `codigo`, busca EXCLUSIVAMENTE por código (+embalagem se houver).
+          // NUNCA fazer fallback por descrição quando a linha tem código: se o código for novo,
+          // o registro DEVE ser inserido, mesmo que haja outro produto com descrição similar/idêntica.
           let existente = null
 
           if (codigo) {
@@ -124,9 +135,8 @@ routerAdd('POST', '/backend/v1/simulador/importar-lote', (e) => {
             } catch (_) {
               existente = null
             }
-          }
-
-          if (!existente && desc) {
+          } else if (desc) {
+            // O fallback por descrição SÓ é permitido quando a linha da planilha NÃO tem código
             const cleanDesc = desc.replace(/'/g, "''")
             let filter = "descricao = '" + cleanDesc + "'"
             if (emb) {
@@ -200,8 +210,17 @@ routerAdd('POST', '/backend/v1/simulador/importar-lote', (e) => {
 
           if (existente) {
             atualizados++
+            const recId = existente.id
+            if (recId && idsCriadosNestaExecucao[recId]) {
+              atualizadosIntraLote++
+            } else {
+              atualizadosPreExistentes++
+            }
           } else {
             inseridos++
+            if (rec.id) {
+              idsCriadosNestaExecucao[rec.id] = true
+            }
           }
         } catch (itemErr) {
           const errMsg = (itemErr && itemErr.message) || String(itemErr)
@@ -225,6 +244,8 @@ routerAdd('POST', '/backend/v1/simulador/importar-lote', (e) => {
       alvo: 'simulador_produtos',
       inseridos: inseridos,
       atualizados: atualizados,
+      atualizadosIntraLote: atualizadosIntraLote,
+      atualizadosPreExistentes: atualizadosPreExistentes,
       ignorados: ignorados,
       duplicadasNoLote: duplicadasNoLote,
       erros: erros,
@@ -277,7 +298,11 @@ routerAdd('POST', '/backend/v1/simulador/importar-lote', (e) => {
         duplicadasNoLote[chaveOrigemDestino] = (duplicadasNoLote[chaveOrigemDestino] || 0) + 1
 
         try {
-          // Idempotência: busca existente
+          // Idempotência estrita: busca existente.
+          // Se a linha tem id_regra, busca prioritariamente por id_regra.
+          // Se não encontrou por id_regra e tem chave_origem_destino, busca por chave_origem_destino.
+          // O fallback por uf_origem + uf_destino + grTrib SÓ PODE ser acionado se NÃO houver id_regra
+          // na linha, para evitar mesclar regras distintas que possuem id_regra próprio.
           let existente = null
 
           if (idRegra) {
@@ -304,7 +329,8 @@ routerAdd('POST', '/backend/v1/simulador/importar-lote', (e) => {
             }
           }
 
-          if (!existente) {
+          // Fallback por UF+GrTrib só é acionado se a linha NÃO tiver id_regra
+          if (!existente && !idRegra) {
             let filter = "uf_origem = '" + ufOrigem + "' && uf_destino = '" + ufDestino + "'"
             if (grTrib) {
               filter += " && grupo_tributario_codigo = '" + grTrib.replace(/'/g, "''") + "'"
@@ -317,7 +343,6 @@ routerAdd('POST', '/backend/v1/simulador/importar-lote', (e) => {
           }
 
           const rec = existente || new Record(colModel)
-
           rec.set('uf_origem', ufOrigem)
           rec.set('uf_destino', ufDestino)
           rec.set('chave_origem_destino', chaveOrigemDestino)
@@ -400,8 +425,17 @@ routerAdd('POST', '/backend/v1/simulador/importar-lote', (e) => {
 
           if (existente) {
             atualizados++
+            const recId = existente.id
+            if (recId && idsCriadosNestaExecucao[recId]) {
+              atualizadosIntraLote++
+            } else {
+              atualizadosPreExistentes++
+            }
           } else {
             inseridos++
+            if (rec.id) {
+              idsCriadosNestaExecucao[rec.id] = true
+            }
           }
         } catch (itemErr) {
           const errMsg = (itemErr && itemErr.message) || String(itemErr)
@@ -425,6 +459,8 @@ routerAdd('POST', '/backend/v1/simulador/importar-lote', (e) => {
       alvo: 'simulador_regras_icms',
       inseridos: inseridos,
       atualizados: atualizados,
+      atualizadosIntraLote: atualizadosIntraLote,
+      atualizadosPreExistentes: atualizadosPreExistentes,
       ignorados: ignorados,
       duplicadasNoLote: duplicadasNoLote,
       erros: erros,

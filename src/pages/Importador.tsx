@@ -633,6 +633,8 @@ export function Importador() {
       const finalResult: ResultadoImportacaoLote = {
         inseridos: resultadoLote.inseridos,
         atualizados: resultadoLote.atualizados ?? 0,
+        atualizadosIntraLote: resultadoLote.atualizadosIntraLote ?? 0,
+        atualizadosPreExistentes: resultadoLote.atualizadosPreExistentes ?? 0,
         ignorados: resultadoLote.ignorados,
         duplicadasNoLote: todasDuplicadas,
         erros: todosErros,
@@ -962,24 +964,34 @@ export function Importador() {
                   const duplicadasEntradas = Object.entries(
                     importSummary.duplicadasNoLote || {},
                   ).filter(([, count]) => count > 1)
-                  const totalLinhasDuplicadas = duplicadasEntradas.reduce(
+                  const totalLinhasDuplicadasPlanilha = duplicadasEntradas.reduce(
                     (acc, [, count]) => acc + (count - 1),
                     0,
                   )
-                  const totalCodigosDuplicados = duplicadasEntradas.length
-                  const totalAtualizadosGerais = importSummary.atualizados ?? 0
-                  const atualizadosPreExistentes = Math.max(
-                    0,
-                    totalAtualizadosGerais - totalLinhasDuplicadas,
-                  )
+                  const totalChavesDuplicadas = duplicadasEntradas.length
+
+                  // Contadores precisos retornados pelo backend
+                  // Se o backend retornou atualizadosIntraLote ou atualizadosPreExistentes, usamos direto
+                  const temContadorSeparado =
+                    importSummary.atualizadosIntraLote !== undefined ||
+                    importSummary.atualizadosPreExistentes !== undefined
+
+                  const duplicadasNoArquivo = temContadorSeparado
+                    ? (importSummary.atualizadosIntraLote ?? 0) > 0
+                      ? importSummary.atualizadosIntraLote!
+                      : totalLinhasDuplicadasPlanilha
+                    : totalLinhasDuplicadasPlanilha
+
+                  const atualizadosPreExistentes = temContadorSeparado
+                    ? (importSummary.atualizadosPreExistentes ?? 0)
+                    : Math.max(0, (importSummary.atualizados ?? 0) - duplicadasNoArquivo)
+
+                  const temPreExistentes = atualizadosPreExistentes > 0
+                  const temDuplicadasPlanilha = totalChavesDuplicadas > 0 || duplicadasNoArquivo > 0
 
                   return (
                     <div className="space-y-3">
-                      <div
-                        className={`grid grid-cols-1 ${
-                          totalCodigosDuplicados > 0 ? 'sm:grid-cols-4' : 'sm:grid-cols-3'
-                        } gap-3 text-xs`}
-                      >
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
                         <div className="p-3 rounded-xl bg-emerald-50 text-emerald-900 border border-emerald-200">
                           <span className="block text-[11px] text-emerald-700 font-medium">
                             Novos Inseridos
@@ -988,55 +1000,77 @@ export function Importador() {
                             {importSummary.inseridos}
                           </strong>
                           <span className="block text-[10px] text-emerald-600 mt-0.5">
-                            Gravados com sucesso na coleção
+                            Registros inéditos gravados
                           </span>
                         </div>
 
-                        {totalCodigosDuplicados > 0 ? (
-                          <>
-                            <div className="p-3 rounded-xl bg-amber-50 text-amber-900 border border-amber-200">
-                              <span className="block text-[11px] text-amber-700 font-medium">
-                                Duplicadas na Planilha
-                              </span>
-                              <strong className="text-xl font-bold text-amber-800">
-                                {totalLinhasDuplicadas}
-                              </strong>
-                              <span className="block text-[10px] text-amber-600 mt-0.5">
-                                {totalCodigosDuplicados}{' '}
-                                {totalCodigosDuplicados === 1
-                                  ? activeZone.targetCollection === 'simulador_produtos'
+                        <div
+                          className={`p-3 rounded-xl border ${
+                            temDuplicadasPlanilha
+                              ? 'bg-amber-50 text-amber-900 border-amber-200'
+                              : 'bg-slate-50 text-slate-700 border-slate-200'
+                          }`}
+                        >
+                          <span
+                            className={`block text-[11px] font-medium ${
+                              temDuplicadasPlanilha ? 'text-amber-700' : 'text-slate-500'
+                            }`}
+                          >
+                            Duplicadas na Planilha
+                          </span>
+                          <strong
+                            className={`text-xl font-bold ${
+                              temDuplicadasPlanilha ? 'text-amber-800' : 'text-slate-700'
+                            }`}
+                          >
+                            {duplicadasNoArquivo}
+                          </strong>
+                          <span
+                            className={`block text-[10px] mt-0.5 ${
+                              temDuplicadasPlanilha ? 'text-amber-600' : 'text-slate-500'
+                            }`}
+                          >
+                            {totalChavesDuplicadas > 0
+                              ? `${totalChavesDuplicadas} ${
+                                  totalChavesDuplicadas === 1
                                     ? 'chave repetida'
-                                    : 'chave repetida'
-                                  : 'chaves repetidas'}{' '}
-                                • prevalece última
-                              </span>
-                            </div>
+                                    : 'chaves repetidas'
+                                } • vale a última`
+                              : 'Nenhuma chave repetida no arquivo'}
+                          </span>
+                        </div>
 
-                            <div className="p-3 rounded-xl bg-blue-50 text-blue-900 border border-blue-200">
-                              <span className="block text-[11px] text-blue-700 font-medium">
-                                Atualizados Pré-Existentes
-                              </span>
-                              <strong className="text-xl font-bold text-blue-800">
-                                {atualizadosPreExistentes}
-                              </strong>
-                              <span className="block text-[10px] text-blue-600 mt-0.5">
-                                Já existiam antes da importação
-                              </span>
-                            </div>
-                          </>
-                        ) : (
-                          <div className="p-3 rounded-xl bg-blue-50 text-blue-900 border border-blue-200">
-                            <span className="block text-[11px] text-blue-700 font-medium">
-                              Atualizados / Enriquecidos
-                            </span>
-                            <strong className="text-xl font-bold text-blue-800">
-                              {totalAtualizadosGerais}
-                            </strong>
-                            <span className="block text-[10px] text-blue-600 mt-0.5">
-                              Dados complementados por idempotência
-                            </span>
-                          </div>
-                        )}
+                        <div
+                          className={`p-3 rounded-xl border ${
+                            temPreExistentes
+                              ? 'bg-blue-50 text-blue-900 border-blue-200'
+                              : 'bg-slate-50 text-slate-700 border-slate-200'
+                          }`}
+                        >
+                          <span
+                            className={`block text-[11px] font-medium ${
+                              temPreExistentes ? 'text-blue-700' : 'text-slate-500'
+                            }`}
+                          >
+                            Atualizados Pré-Existentes
+                          </span>
+                          <strong
+                            className={`text-xl font-bold ${
+                              temPreExistentes ? 'text-blue-800' : 'text-slate-700'
+                            }`}
+                          >
+                            {atualizadosPreExistentes}
+                          </strong>
+                          <span
+                            className={`block text-[10px] mt-0.5 ${
+                              temPreExistentes ? 'text-blue-600' : 'text-slate-500'
+                            }`}
+                          >
+                            {temPreExistentes
+                              ? 'Já existiam na base antes'
+                              : '0 registros prévios alterados'}
+                          </span>
+                        </div>
 
                         <div className="p-3 rounded-xl bg-slate-50 text-slate-900 border border-slate-200">
                           <span className="block text-[11px] text-slate-700 font-medium">
@@ -1045,7 +1079,9 @@ export function Importador() {
                               : 'Linhas Recusadas / Ignoradas'}
                           </span>
                           <strong
-                            className={`text-xl font-bold ${importSummary.erros.length > 0 ? 'text-red-800' : 'text-slate-800'}`}
+                            className={`text-xl font-bold ${
+                              importSummary.erros.length > 0 ? 'text-red-800' : 'text-slate-800'
+                            }`}
                           >
                             {importSummary.erros.length}
                           </strong>
@@ -1057,32 +1093,30 @@ export function Importador() {
                         </div>
                       </div>
 
-                      {/* Nota Explicativa e Listagem de Códigos Duplicados na Planilha */}
-                      {totalCodigosDuplicados > 0 && (
+                      {/* Detalhamento e Listagem das Chaves Duplicadas na Planilha */}
+                      {totalChavesDuplicadas > 0 && (
                         <div className="p-3.5 rounded-xl bg-amber-50/70 border border-amber-200 text-xs text-amber-950 space-y-2">
                           <div className="flex items-start gap-2">
                             <Info className="w-4 h-4 text-amber-700 mt-0.5 flex-shrink-0" />
                             <div>
                               <p className="font-semibold text-amber-900">
-                                Transparência de Duplicatas na Planilha (Intra-Arquivo):
+                                Transparência de Duplicadas na Planilha (Intra-Arquivo):
                               </p>
                               <p className="text-amber-800 text-[11px] mt-0.5 leading-relaxed">
                                 {activeZone.targetCollection === 'simulador_produtos' ? (
                                   <>
-                                    Identificação por chave composta{' '}
-                                    <strong>Código + Embalagem</strong>. Variantes de embalagem do
-                                    mesmo código convivem como produtos distintos na base. Linhas
-                                    com a <strong>mesma combinação de código e embalagem</strong>{' '}
-                                    são atualizadas (upsert idempotente pela última ocorrência),
-                                    garantindo <strong>0 perdas</strong> de dados.
+                                    Identificação por chave <strong>Código + Embalagem</strong>. As{' '}
+                                    {totalChavesDuplicadas} chaves abaixo aparecem mais de uma vez
+                                    na planilha enviada. O sistema realiza o upsert idempotente
+                                    mantendo 1 registro único no banco com os dados da{' '}
+                                    <strong>última ocorrência</strong> (garantindo{' '}
+                                    <strong>0 perdas</strong> de produtos distintos).
                                   </>
                                 ) : (
                                   <>
-                                    Chave identificadora (UF Origem + UF Destino) duplicada na
-                                    planilha <strong>NÃO é perda</strong>. O sistema realizou a
-                                    gravação mantendo uma única vez na base com os dados da{' '}
-                                    <strong>última ocorrência</strong> (upsert idempotente). Houve{' '}
-                                    <strong>0 perdas</strong> de registros.
+                                    A chave identificadora aparece repetida na planilha enviada. O
+                                    sistema manteve uma única ocorrência no banco com os dados mais
+                                    recentes da última linha (upsert idempotente).
                                   </>
                                 )}
                               </p>
@@ -1092,22 +1126,24 @@ export function Importador() {
                           <div className="pt-1.5 border-t border-amber-200/60 flex flex-wrap items-center gap-1.5">
                             <span className="text-[11px] font-semibold text-amber-900">
                               {activeZone.targetCollection === 'simulador_produtos'
-                                ? `Itens com repetição exata [Código + Embalagem] (${totalCodigosDuplicados}):`
-                                : `Chaves com repetição identificadas (${totalCodigosDuplicados}):`}
+                                ? `Chaves repetidas na planilha [Código | Embalagem] (${totalChavesDuplicadas}):`
+                                : `Chaves repetidas identificadas (${totalChavesDuplicadas}):`}
                             </span>
-                            {duplicadasEntradas.slice(0, 15).map(([itemKey, count]) => (
+                            {duplicadasEntradas.slice(0, 20).map(([itemKey, count]) => (
                               <Badge
                                 key={itemKey}
                                 variant="outline"
                                 className="bg-white text-amber-900 border-amber-300 font-mono text-[10px] px-2 py-0.5"
                               >
                                 {itemKey}{' '}
-                                <span className="text-amber-600 ml-1 font-sans">({count}x)</span>
+                                <span className="text-amber-600 ml-1 font-sans font-bold">
+                                  ({count}x)
+                                </span>
                               </Badge>
                             ))}
-                            {duplicadasEntradas.length > 15 && (
+                            {duplicadasEntradas.length > 20 && (
                               <span className="text-[10px] text-amber-700">
-                                + {duplicadasEntradas.length - 15} outras
+                                + {duplicadasEntradas.length - 20} outras
                               </span>
                             )}
                           </div>
