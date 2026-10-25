@@ -279,6 +279,244 @@ export const CAMPOS_REGRA_ICMS_MAP = [
   },
 ]
 
+/**
+ * Executa deleção de um único registro de forma segura, com suporte a retentativas
+ * exponenciais em caso de erro transitório ou HTTP 429 (Rate Limit).
+ */
+async function deletarRegistroComRetry(
+  colecao: 'simulador_produtos' | 'simulador_regras_icms',
+  id: string,
+  maxTentativas = 4,
+): Promise<boolean> {
+  let esperaMs = 300
+
+  for (let tentativa = 1; tentativa <= maxTentativas; tentativa++) {
+    try {
+      if (colecao === 'simulador_produtos') {
+        await pb.collection('simulador_produtos').delete(id)
+      } else {
+        await pb.collection('simulador_regras_icms').delete(id)
+      }
+      return true
+    } catch (err: any) {
+      const status = err?.status || err?.statusCode || 0
+      const isRateLimit = status === 429
+      const isNotFound = status === 404
+
+      // Se o registro já não existe, considera excluído com sucesso
+      if (isNotFound) {
+        return true
+      }
+
+      if (tentativa === maxTentativas) {
+        console.error(`Falha definitiva ao excluir ${colecao} (id: ${id}):`, err)
+        return false
+      }
+
+      // Backoff aumentado se 429
+      const atraso = isRateLimit
+        ? esperaMs * 2 + Math.random() * 300
+        : esperaMs + Math.random() * 100
+      await new Promise((resolve) => setTimeout(resolve, atraso))
+      esperaMs *= 2
+    }
+  }
+
+  return false
+}
+
+/**
+ * Função auxiliar: exclusão em lote por IDs com concorrência controlada (4 a 6 workers),
+ * retry + backoff em falhas (incluindo 429), tolerância a falhas por item sem abortar o todo,
+ * e callback opcional de progresso para atualização em tempo real.
+ */
+async function executarExclusaoParalelaPorIds(
+  colecao: 'simulador_produtos' | 'simulador_regras_icms',
+  ids: string[],
+  onProgresso?: (progresso: {
+    apagados: number
+    totalInicial: number
+    emExecucao: boolean
+  }) => void,
+  totalInicialInformado?: number,
+): Promise<{ sucesso: number; falhas: number }> {
+  const total = ids.length
+  if (total === 0) {
+    return { sucesso: 0, falhas: 0 }
+  }
+
+  const totalParaContador = totalInicialInformado ?? total
+  let sucesso = 0
+  let falhas = 0
+  let indiceAtual = 0
+  let taxa429 = 0
+
+  // Concorrência inicial adaptativa (inicia com 5 workers, ajustável entre 2 e 6)
+  let concorrencia = 5
+
+  const proximoTrabalho = async (): Promise<void> => {
+    while (indiceAtual < ids.length) {
+      const idx = indiceAtual++
+      const id = ids[idx]
+      if (!id) continue
+
+      try {
+        const ok = await deletarRegistroComRetry(colecao, id)
+        if (ok) {
+          sucesso++
+        } else {
+          falhas++
+        }
+      } catch (err: any) {
+        falhas++
+        if (err?.status === 429) {
+          taxa429++
+          // Reduz concorrência adaptativamente se encontrar rate limits
+          if (taxa429 > 3 && concorrencia > 2) {
+            concorrencia = Math.max(2, concorrencia - 1)
+          }
+        }
+      }
+
+      // Notifica progresso a cada lote pequeno ou no final
+      const processados = sucesso + falhas
+      if (onProgresso && (processados % 10 === 0 || processados === total)) {
+        onProgresso({
+          apagados: sucesso,
+          totalInicial: totalParaContador,
+          emExecucao: true,
+        })
+      }
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(concorrencia, ids.length) }, () =>
+    proximoTrabalho(),
+  )
+  await Promise.all(workers)
+
+  return { sucesso, falhas }
+}
+
+/**
+ * Função auxiliar: limpeza integral otimizada de uma coleção própria do simulador.
+ * - Coleta em lotes grandes (até 500 IDs por página com fields='id')
+ * - Deleção paralela controlada com retries, backoff adaptativo e tolerância a falhas
+ * - Mantém nomes de coleções LITERAIS e fixos
+ * - Notificação de progresso em tempo real compatível com ModalLimparBase
+ */
+async function executarLimpezaOtimizadaColecao(
+  colecao: 'simulador_produtos' | 'simulador_regras_icms',
+  onProgresso?: (progresso: {
+    apagados: number
+    totalInicial: number
+    emExecucao: boolean
+  }) => void,
+): Promise<{ apagados: number; falhas: number }> {
+  // 1. Obter contagem total inicial
+  let totalInicial = 0
+  try {
+    if (colecao === 'simulador_produtos') {
+      const res = await pb.collection('simulador_produtos').getList(1, 1, { fields: 'id' })
+      totalInicial = res.totalItems
+    } else {
+      const res = await pb.collection('simulador_regras_icms').getList(1, 1, { fields: 'id' })
+      totalInicial = res.totalItems
+    }
+  } catch (err) {
+    console.error(`Erro ao contar total inicial para limpeza de ${colecao}:`, err)
+  }
+
+  if (totalInicial === 0) {
+    if (onProgresso) {
+      onProgresso({ apagados: 0, totalInicial: 0, emExecucao: false })
+    }
+    return { apagados: 0, falhas: 0 }
+  }
+
+  let totalApagados = 0
+  let totalFalhas = 0
+  const tamanhoLoteIds = 500
+
+  if (onProgresso) {
+    onProgresso({
+      apagados: 0,
+      totalInicial,
+      emExecucao: true,
+    })
+  }
+
+  // Loop de limpeza em lotes grandes de até 500 registros por chamada
+  while (true) {
+    let idsLote: string[] = []
+
+    try {
+      if (colecao === 'simulador_produtos') {
+        const pagina = await pb.collection('simulador_produtos').getList(1, tamanhoLoteIds, {
+          fields: 'id',
+        })
+        idsLote = pagina.items.map((it) => it.id)
+      } else {
+        const pagina = await pb.collection('simulador_regras_icms').getList(1, tamanhoLoteIds, {
+          fields: 'id',
+        })
+        idsLote = pagina.items.map((it) => it.id)
+      }
+    } catch (err) {
+      console.error(`Erro ao buscar página de IDs para limpeza de ${colecao}:`, err)
+      break
+    }
+
+    if (idsLote.length === 0) {
+      break
+    }
+
+    // Executa a exclusão em paralelo do lote atual com callback de progresso contínuo
+    const resultadoLote = await executarExclusaoParalelaPorIds(
+      colecao,
+      idsLote,
+      (p) => {
+        if (onProgresso) {
+          onProgresso({
+            apagados: totalApagados + p.apagados,
+            totalInicial,
+            emExecucao: true,
+          })
+        }
+      },
+      totalInicial,
+    )
+
+    totalApagados += resultadoLote.sucesso
+    totalFalhas += resultadoLote.falhas
+
+    if (onProgresso) {
+      onProgresso({
+        apagados: totalApagados,
+        totalInicial,
+        emExecucao: true,
+      })
+    }
+
+    // Se neste lote nenhum registro pôde ser apagado e houve falha em todos os itens do lote,
+    // aborta para evitar loop infinito
+    if (resultadoLote.sucesso === 0 && resultadoLote.falhas >= idsLote.length) {
+      console.warn(`Interrompendo limpeza de ${colecao} pois o lote inteiro falhou na exclusão.`)
+      break
+    }
+  }
+
+  if (onProgresso) {
+    onProgresso({
+      apagados: totalApagados,
+      totalInicial,
+      emExecucao: false,
+    })
+  }
+
+  return { apagados: totalApagados, falhas: totalFalhas }
+}
+
 export const simuladorImportadorService = {
   // --------------------------------------------------------------------------
   // PRODUTOS: CRUD DIRETO
@@ -384,8 +622,10 @@ export const simuladorImportadorService = {
   },
 
   /**
-   * Limpa integralmente a base simulador_regras_icms em lotes para não estourar limite da API.
-   * Suporta callback de progresso.
+   * Limpa integralmente a base simulador_regras_icms com alta performance:
+   * - Coleta em lotes maiores (até 500 ids por página com fields='id')
+   * - Deleção paralela controlada (concorrência de 4-6 workers com retries e backoff adaptativo para 429)
+   * - Notificação de progresso em tempo real
    */
   async limparBaseRegrasIcms(
     onProgresso?: (progresso: {
@@ -393,58 +633,9 @@ export const simuladorImportadorService = {
       totalInicial: number
       emExecucao: boolean
     }) => void,
-    tamanhoLote = 200,
+    _tamanhoLoteLegado?: number,
   ): Promise<{ apagados: number; falhas: number }> {
-    const totalInicial = await this.contarTotalRegrasIcms()
-    if (totalInicial === 0) {
-      if (onProgresso) onProgresso({ apagados: 0, totalInicial: 0, emExecucao: false })
-      return { apagados: 0, falhas: 0 }
-    }
-
-    let apagados = 0
-    let falhas = 0
-
-    while (true) {
-      const pagina = await pb.collection('simulador_regras_icms').getList(1, tamanhoLote, {
-        fields: 'id',
-      })
-
-      if (pagina.items.length === 0) {
-        break
-      }
-
-      for (const item of pagina.items) {
-        try {
-          await pb.collection('simulador_regras_icms').delete(item.id)
-          apagados++
-        } catch (err) {
-          console.error(`Erro ao deletar registro de regra ICMS ${item.id}:`, err)
-          falhas++
-        }
-
-        if (onProgresso && (apagados % 20 === 0 || apagados === totalInicial)) {
-          onProgresso({
-            apagados,
-            totalInicial,
-            emExecucao: true,
-          })
-        }
-      }
-
-      if (apagados === 0 && falhas >= pagina.items.length) {
-        break
-      }
-    }
-
-    if (onProgresso) {
-      onProgresso({
-        apagados,
-        totalInicial,
-        emExecucao: false,
-      })
-    }
-
-    return { apagados, falhas }
+    return executarLimpezaOtimizadaColecao('simulador_regras_icms', onProgresso)
   },
 
   async atualizarRegrasIcmsEmMassa(
