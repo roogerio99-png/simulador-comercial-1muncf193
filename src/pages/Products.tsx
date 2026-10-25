@@ -37,6 +37,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog'
+import { ModalLimparBase } from '@/components/ModalLimparBase'
 import {
   CheckSquare,
   Square,
@@ -106,6 +107,9 @@ export function Products() {
   )
   const [excluindoEmMassa, setExcluindoEmMassa] = useState(false)
   const [executandoExclusao, setExecutandoExclusao] = useState(false)
+
+  // Modal de Limpeza Total da Base
+  const [modalLimparBaseAberto, setModalLimparBaseAberto] = useState(false)
 
   // Drawer de Detalhes do Produto
   const [produtoSelecionadoDrawer, setProdutoSelecionadoDrawer] = useState<SimProdutoBase | null>(
@@ -429,14 +433,29 @@ export function Products() {
 
         <div className="flex items-center gap-2">
           {abaAtiva === 'produtos' && (
-            <Button
-              onClick={abrirModalNovo}
-              size="sm"
-              className="h-8 gap-1.5 text-xs bg-[#1D6A43] hover:bg-[#155C36] text-white"
-            >
-              <Plus className="w-4 h-4" />
-              Novo Produto
-            </Button>
+            <>
+              {isAdmin && (
+                <Button
+                  onClick={() => setModalLimparBaseAberto(true)}
+                  size="sm"
+                  variant="outline"
+                  className="h-8 gap-1.5 text-xs border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
+                  title="Excluir permanentemente todos os produtos da base"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-red-600" />
+                  Limpar Base
+                </Button>
+              )}
+
+              <Button
+                onClick={abrirModalNovo}
+                size="sm"
+                className="h-8 gap-1.5 text-xs bg-[#1D6A43] hover:bg-[#155C36] text-white"
+              >
+                <Plus className="w-4 h-4" />
+                Novo Produto
+              </Button>
+            </>
           )}
 
           <Button
@@ -1193,6 +1212,33 @@ export function Products() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* ------------------------------------------------------------- */}
+      {/* MODAL DE LIMPEZA TOTAL DA BASE (simulador_produtos) */}
+      {/* ------------------------------------------------------------- */}
+      <ModalLimparBase
+        aberto={modalLimparBaseAberto}
+        onOpenChange={setModalLimparBaseAberto}
+        nomeEntidade="Produtos do Simulador"
+        nomeColecao="simulador_produtos"
+        isAdmin={isAdmin}
+        aoObterContagem={() => simuladorImportadorService.contarTotalProdutos()}
+        aoConfirmarLimpeza={(onProgresso) =>
+          simuladorImportadorService.limparBaseProdutos(onProgresso)
+        }
+        aoSucesso={(res) => {
+          toast({
+            title: 'Base de Produtos limpa com sucesso',
+            description: `${res.apagados.toLocaleString('pt-BR')} registros foram excluídos permanentemente.${
+              res.falhas > 0 ? ` (${res.falhas} falhas)` : ''
+            }`,
+          })
+          setSelecionados([])
+          setSearchProd('')
+          setOrigemFiltro('todos')
+          carregarProdutos(1)
+        }}
+      />
 
       {/* ------------------------------------------------------------- */}
       {/* MODAL DE CONFIRMAÇÃO DE EXCLUSÃO */}

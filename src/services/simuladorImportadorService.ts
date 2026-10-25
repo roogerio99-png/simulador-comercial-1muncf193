@@ -310,6 +310,84 @@ export const simuladorImportadorService = {
     return { sucesso, falhas }
   },
 
+  /**
+   * Obtém a contagem real e atualizada de registros de produtos na base simulador_produtos
+   */
+  async contarTotalProdutos(): Promise<number> {
+    const res = await pb.collection('simulador_produtos').getList(1, 1, {
+      fields: 'id',
+    })
+    return res.totalItems
+  },
+
+  /**
+   * Limpa integralmente a base simulador_produtos em lotes para não estourar tempo/limite da API.
+   * Suporta callback de progresso.
+   */
+  async limparBaseProdutos(
+    onProgresso?: (progresso: {
+      apagados: number
+      totalInicial: number
+      emExecucao: boolean
+    }) => void,
+    tamanhoLote = 200,
+  ): Promise<{ apagados: number; falhas: number }> {
+    // 1. Obter total inicial
+    const totalInicial = await this.contarTotalProdutos()
+    if (totalInicial === 0) {
+      if (onProgresso) onProgresso({ apagados: 0, totalInicial: 0, emExecucao: false })
+      return { apagados: 0, falhas: 0 }
+    }
+
+    let apagados = 0
+    let falhas = 0
+
+    // Loop de deleção enquanto houver registros
+    while (true) {
+      // Sempre buscamos a página 1 com tamanho de lote, pois ao deletar itens a base diminui
+      const pagina = await pb.collection('simulador_produtos').getList(1, tamanhoLote, {
+        fields: 'id',
+      })
+
+      if (pagina.items.length === 0) {
+        break
+      }
+
+      for (const item of pagina.items) {
+        try {
+          await pb.collection('simulador_produtos').delete(item.id)
+          apagados++
+        } catch (err) {
+          console.error(`Erro ao deletar registro de produto ${item.id}:`, err)
+          falhas++
+        }
+
+        if (onProgresso && (apagados % 20 === 0 || apagados === totalInicial)) {
+          onProgresso({
+            apagados,
+            totalInicial,
+            emExecucao: true,
+          })
+        }
+      }
+
+      // Se todas as tentativas deste lote falharem, interrompe para evitar loop infinito
+      if (apagados === 0 && falhas >= pagina.items.length) {
+        break
+      }
+    }
+
+    if (onProgresso) {
+      onProgresso({
+        apagados,
+        totalInicial,
+        emExecucao: false,
+      })
+    }
+
+    return { apagados, falhas }
+  },
+
   async atualizarProdutosEmMassa(
     ids: string[],
     dados: Partial<SimProdutoBase>,
@@ -366,6 +444,80 @@ export const simuladorImportadorService = {
       }
     }
     return { sucesso, falhas }
+  },
+
+  /**
+   * Obtém a contagem real e atualizada de registros de regras fiscais na base simulador_regras_icms
+   */
+  async contarTotalRegrasIcms(): Promise<number> {
+    const res = await pb.collection('simulador_regras_icms').getList(1, 1, {
+      fields: 'id',
+    })
+    return res.totalItems
+  },
+
+  /**
+   * Limpa integralmente a base simulador_regras_icms em lotes para não estourar limite da API.
+   * Suporta callback de progresso.
+   */
+  async limparBaseRegrasIcms(
+    onProgresso?: (progresso: {
+      apagados: number
+      totalInicial: number
+      emExecucao: boolean
+    }) => void,
+    tamanhoLote = 200,
+  ): Promise<{ apagados: number; falhas: number }> {
+    const totalInicial = await this.contarTotalRegrasIcms()
+    if (totalInicial === 0) {
+      if (onProgresso) onProgresso({ apagados: 0, totalInicial: 0, emExecucao: false })
+      return { apagados: 0, falhas: 0 }
+    }
+
+    let apagados = 0
+    let falhas = 0
+
+    while (true) {
+      const pagina = await pb.collection('simulador_regras_icms').getList(1, tamanhoLote, {
+        fields: 'id',
+      })
+
+      if (pagina.items.length === 0) {
+        break
+      }
+
+      for (const item of pagina.items) {
+        try {
+          await pb.collection('simulador_regras_icms').delete(item.id)
+          apagados++
+        } catch (err) {
+          console.error(`Erro ao deletar registro de regra ICMS ${item.id}:`, err)
+          falhas++
+        }
+
+        if (onProgresso && (apagados % 20 === 0 || apagados === totalInicial)) {
+          onProgresso({
+            apagados,
+            totalInicial,
+            emExecucao: true,
+          })
+        }
+      }
+
+      if (apagados === 0 && falhas >= pagina.items.length) {
+        break
+      }
+    }
+
+    if (onProgresso) {
+      onProgresso({
+        apagados,
+        totalInicial,
+        emExecucao: false,
+      })
+    }
+
+    return { apagados, falhas }
   },
 
   async atualizarRegrasIcmsEmMassa(

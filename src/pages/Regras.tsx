@@ -36,6 +36,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog'
+import { ModalLimparBase } from '@/components/ModalLimparBase'
 import {
   CheckSquare,
   Square,
@@ -135,6 +136,9 @@ export function Regras() {
   )
   const [excluindoEmMassa, setExcluindoEmMassa] = useState(false)
   const [executandoExclusao, setExecutandoExclusao] = useState(false)
+
+  // Modal de Limpeza Total da Base
+  const [modalLimparBaseAberto, setModalLimparBaseAberto] = useState(false)
 
   // 2. Parametrização Fiscal
   const [parametrizacoes, setParametrizacoes] = useState<ParametrizacaoFiscal[]>([])
@@ -498,14 +502,29 @@ export function Regras() {
 
         <div className="flex items-center gap-2">
           {abaAtiva === 'icms' && (
-            <Button
-              onClick={abrirModalNovo}
-              size="sm"
-              className="h-8 gap-1.5 text-xs bg-[#1D6A43] hover:bg-[#155C36] text-white"
-            >
-              <Plus className="w-4 h-4" />
-              Nova Regra ICMS
-            </Button>
+            <>
+              {isAdmin && (
+                <Button
+                  onClick={() => setModalLimparBaseAberto(true)}
+                  size="sm"
+                  variant="outline"
+                  className="h-8 gap-1.5 text-xs border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
+                  title="Excluir permanentemente todas as regras de ICMS da base"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-red-600" />
+                  Limpar Base
+                </Button>
+              )}
+
+              <Button
+                onClick={abrirModalNovo}
+                size="sm"
+                className="h-8 gap-1.5 text-xs bg-[#1D6A43] hover:bg-[#155C36] text-white"
+              >
+                <Plus className="w-4 h-4" />
+                Nova Regra ICMS
+              </Button>
+            </>
           )}
 
           <Button
@@ -1516,6 +1535,33 @@ export function Regras() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* ------------------------------------------------------------- */}
+      {/* MODAL DE LIMPEZA TOTAL DA BASE (simulador_regras_icms) */}
+      {/* ------------------------------------------------------------- */}
+      <ModalLimparBase
+        aberto={modalLimparBaseAberto}
+        onOpenChange={setModalLimparBaseAberto}
+        nomeEntidade="Regras Fiscais de ICMS"
+        nomeColecao="simulador_regras_icms"
+        isAdmin={isAdmin}
+        aoObterContagem={() => simuladorImportadorService.contarTotalRegrasIcms()}
+        aoConfirmarLimpeza={(onProgresso) =>
+          simuladorImportadorService.limparBaseRegrasIcms(onProgresso)
+        }
+        aoSucesso={(res) => {
+          toast({
+            title: 'Base de Regras Fiscais limpa com sucesso',
+            description: `${res.apagados.toLocaleString('pt-BR')} regras de ICMS foram excluídas permanentemente.${
+              res.falhas > 0 ? ` (${res.falhas} falhas)` : ''
+            }`,
+          })
+          setSelecionados([])
+          setUfOrigemFiltro('TODAS')
+          setUfDestinoFiltro('TODAS')
+          carregarIcms(1)
+        }}
+      />
 
       {/* ------------------------------------------------------------- */}
       {/* MODAL DE CONFIRMAÇÃO DE EXCLUSÃO */}
