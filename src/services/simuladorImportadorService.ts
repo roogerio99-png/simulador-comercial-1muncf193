@@ -399,13 +399,23 @@ async function executarExclusaoParalelaPorIds(
 }
 
 /**
- * Função auxiliar: limpeza integral otimizada de uma coleção própria do simulador.
- * - Coleta em lotes grandes (até 500 IDs por página com fields='id')
- * - Deleção paralela controlada com retries, backoff adaptativo e tolerância a falhas
- * - Mantém nomes de coleções LITERAIS e fixos
- * - Notificação de progresso em tempo real compatível com ModalLimparBase
+ * Resposta da rota de limpeza rápida do servidor (/backend/v1/simulador/limpar-base)
  */
-async function executarLimpezaOtimizadaColecao(
+export interface RespostaLimparBaseServidor {
+  sucesso: boolean
+  alvo: 'simulador_produtos' | 'simulador_regras_icms'
+  apagados: number
+  mensagem: string
+  error?: string
+}
+
+/**
+ * Função auxiliar: limpeza de base via servidor (POST /backend/v1/simulador/limpar-base).
+ * - Executa exclusão direta no banco pelo backend em segundos, sem tráfego registro a registro.
+ * - Segurança absoluta: coleções como literais fixos ('simulador_produtos' ou 'simulador_regras_icms').
+ * - Fallback automático para exclusão paralela cliente se a rota não estiver acessível.
+ */
+async function executarLimpezaBaseServidor(
   colecao: 'simulador_produtos' | 'simulador_regras_icms',
   onProgresso?: (progresso: {
     apagados: number
@@ -413,7 +423,7 @@ async function executarLimpezaOtimizadaColecao(
     emExecucao: boolean
   }) => void,
 ): Promise<{ apagados: number; falhas: number }> {
-  // 1. Obter contagem total inicial
+  // 1. Obter contagem total inicial para informar progresso e resumo
   let totalInicial = 0
   try {
     if (colecao === 'simulador_produtos') {
@@ -434,10 +444,6 @@ async function executarLimpezaOtimizadaColecao(
     return { apagados: 0, falhas: 0 }
   }
 
-  let totalApagados = 0
-  let totalFalhas = 0
-  const tamanhoLoteIds = 500
-
   if (onProgresso) {
     onProgresso({
       apagados: 0,
@@ -446,7 +452,69 @@ async function executarLimpezaOtimizadaColecao(
     })
   }
 
-  // Loop de limpeza em lotes grandes de até 500 registros por chamada
+  // 2. Chamar o hook rápido de servidor do simulador
+  try {
+    const res = await pb.send<RespostaLimparBaseServidor>('/backend/v1/simulador/limpar-base', {
+      method: 'POST',
+      body: {
+        alvo: colecao,
+        confirmar: 'LIMPAR',
+      },
+    })
+
+    const apagados = typeof res?.apagados === 'number' ? res.apagados : totalInicial
+
+    if (onProgresso) {
+      onProgresso({
+        apagados,
+        totalInicial,
+        emExecucao: false,
+      })
+    }
+
+    return { apagados, falhas: 0 }
+  } catch (serverErr: any) {
+    console.warn(
+      `Falha na rota rápida do servidor (/backend/v1/simulador/limpar-base) para ${colecao}:`,
+      serverErr,
+    )
+
+    // Se o erro for de permissão (401/403) ou validação (400), propaga o erro imediatamente
+    const status = serverErr?.status || serverErr?.response?.status
+    const msg =
+      serverErr?.response?.data?.error ||
+      serverErr?.data?.error ||
+      serverErr?.message ||
+      'Erro ao executar limpeza no servidor'
+
+    if (status === 401 || status === 403 || status === 400) {
+      if (onProgresso) {
+        onProgresso({ apagados: 0, totalInicial, emExecucao: false })
+      }
+      throw new Error(msg)
+    }
+
+    // Caso ocorra falha de rede ou rota temporariamente indisponível, fallback em lotes
+    return executarLimpezaFallbackCliente(colecao, totalInicial, onProgresso)
+  }
+}
+
+/**
+ * Fallback resiliente: exclusão paginada em lote no cliente se a rota do servidor falhar
+ */
+async function executarLimpezaFallbackCliente(
+  colecao: 'simulador_produtos' | 'simulador_regras_icms',
+  totalInicial: number,
+  onProgresso?: (progresso: {
+    apagados: number
+    totalInicial: number
+    emExecucao: boolean
+  }) => void,
+): Promise<{ apagados: number; falhas: number }> {
+  let totalApagados = 0
+  let totalFalhas = 0
+  const tamanhoLoteIds = 500
+
   while (true) {
     let idsLote: string[] = []
 
@@ -463,15 +531,12 @@ async function executarLimpezaOtimizadaColecao(
         idsLote = pagina.items.map((it) => it.id)
       }
     } catch (err) {
-      console.error(`Erro ao buscar página de IDs para limpeza de ${colecao}:`, err)
+      console.error(`Erro ao buscar página de IDs no fallback de ${colecao}:`, err)
       break
     }
 
-    if (idsLote.length === 0) {
-      break
-    }
+    if (idsLote.length === 0) break
 
-    // Executa a exclusão em paralelo do lote atual com callback de progresso contínuo
     const resultadoLote = await executarExclusaoParalelaPorIds(
       colecao,
       idsLote,
@@ -490,18 +555,7 @@ async function executarLimpezaOtimizadaColecao(
     totalApagados += resultadoLote.sucesso
     totalFalhas += resultadoLote.falhas
 
-    if (onProgresso) {
-      onProgresso({
-        apagados: totalApagados,
-        totalInicial,
-        emExecucao: true,
-      })
-    }
-
-    // Se neste lote nenhum registro pôde ser apagado e houve falha em todos os itens do lote,
-    // aborta para evitar loop infinito
     if (resultadoLote.sucesso === 0 && resultadoLote.falhas >= idsLote.length) {
-      console.warn(`Interrompendo limpeza de ${colecao} pois o lote inteiro falhou na exclusão.`)
       break
     }
   }
@@ -548,10 +602,10 @@ export const simuladorImportadorService = {
   },
 
   /**
-   * Limpa integralmente a base simulador_produtos com alta performance:
-   * - Coleta em lotes maiores (até 500 ids por página com fields='id')
-   * - Deleção paralela controlada (concorrência de 6 workers com retries e backoff adaptativo para 429)
-   * - Notificação de progresso em tempo real
+   * Limpa integralmente a base simulador_produtos via rota rápida do servidor:
+   * - Execução direta no banco pelo servidor (POST /backend/v1/simulador/limpar-base)
+   * - Resposta em segundos sem tráfego registro a registro
+   * - Resiliente com fallback para exclusão client-side se necessário
    */
   async limparBaseProdutos(
     onProgresso?: (progresso: {
@@ -561,7 +615,7 @@ export const simuladorImportadorService = {
     }) => void,
     _tamanhoLoteLegado?: number,
   ): Promise<{ apagados: number; falhas: number }> {
-    return executarLimpezaOtimizadaColecao('simulador_produtos', onProgresso)
+    return executarLimpezaBaseServidor('simulador_produtos', onProgresso)
   },
 
   async atualizarProdutosEmMassa(
@@ -622,10 +676,10 @@ export const simuladorImportadorService = {
   },
 
   /**
-   * Limpa integralmente a base simulador_regras_icms com alta performance:
-   * - Coleta em lotes maiores (até 500 ids por página com fields='id')
-   * - Deleção paralela controlada (concorrência de 4-6 workers com retries e backoff adaptativo para 429)
-   * - Notificação de progresso em tempo real
+   * Limpa integralmente a base simulador_regras_icms via rota rápida do servidor:
+   * - Execução direta no banco pelo servidor (POST /backend/v1/simulador/limpar-base)
+   * - Resposta em segundos sem tráfego registro a registro
+   * - Resiliente com fallback para exclusão client-side se necessário
    */
   async limparBaseRegrasIcms(
     onProgresso?: (progresso: {
@@ -635,7 +689,7 @@ export const simuladorImportadorService = {
     }) => void,
     _tamanhoLoteLegado?: number,
   ): Promise<{ apagados: number; falhas: number }> {
-    return executarLimpezaOtimizadaColecao('simulador_regras_icms', onProgresso)
+    return executarLimpezaBaseServidor('simulador_regras_icms', onProgresso)
   },
 
   async atualizarRegrasIcmsEmMassa(

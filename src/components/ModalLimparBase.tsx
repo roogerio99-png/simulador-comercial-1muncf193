@@ -198,21 +198,22 @@ export function ModalLimparBase({
             {executando && (
               <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 space-y-2">
                 <div className="flex items-center justify-between text-xs font-semibold text-amber-900">
-                  <span className="flex items-center gap-1.5">
+                  <span className="flex items-center gap-2">
                     <Loader2 className="w-4 h-4 animate-spin text-amber-700" />
-                    Apagando registros em lotes...
+                    Excluindo registros no servidor...
                   </span>
-                  <span>{percentualProgresso}%</span>
+                  {percentualProgresso > 0 ? <span>{percentualProgresso}%</span> : null}
                 </div>
                 <div className="w-full bg-amber-200 rounded-full h-2 overflow-hidden">
                   <div
                     className="bg-amber-600 h-2 transition-all duration-200"
-                    style={{ width: `${percentualProgresso}%` }}
+                    style={{
+                      width: percentualProgresso > 0 ? `${percentualProgresso}%` : '100%',
+                    }}
                   />
                 </div>
                 <p className="text-[11px] text-amber-800 text-center font-mono">
-                  {progresso.apagados.toLocaleString('pt-BR')} de{' '}
-                  {progresso.totalInicial.toLocaleString('pt-BR')} registros excluídos
+                  Processando exclusão no banco de dados com alta performance...
                 </p>
               </div>
             )}
