@@ -959,7 +959,9 @@ export function Importador() {
 
                 {/* Cards de Métricas */}
                 {(() => {
-                  const duplicadasEntradas = Object.entries(importSummary.duplicadasNoLote || {})
+                  const duplicadasEntradas = Object.entries(
+                    importSummary.duplicadasNoLote || {},
+                  ).filter(([, count]) => count > 1)
                   const totalLinhasDuplicadas = duplicadasEntradas.reduce(
                     (acc, [, count]) => acc + (count - 1),
                     0,
