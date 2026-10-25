@@ -310,6 +310,24 @@ export const simuladorImportadorService = {
     return { sucesso, falhas }
   },
 
+  async atualizarProdutosEmMassa(
+    ids: string[],
+    dados: Partial<SimProdutoBase>,
+  ): Promise<{ sucesso: number; falhas: number }> {
+    let sucesso = 0
+    let falhas = 0
+    for (const id of ids) {
+      try {
+        await pb.collection('simulador_produtos').update(id, dados)
+        sucesso++
+      } catch (err) {
+        console.error(`Erro ao atualizar produto em massa ${id}:`, err)
+        falhas++
+      }
+    }
+    return { sucesso, falhas }
+  },
+
   // --------------------------------------------------------------------------
   // REGRAS ICMS: CRUD DIRETO
   // --------------------------------------------------------------------------
@@ -344,6 +362,24 @@ export const simuladorImportadorService = {
         sucesso++
       } catch (err) {
         console.error(`Erro ao excluir regra ${id}:`, err)
+        falhas++
+      }
+    }
+    return { sucesso, falhas }
+  },
+
+  async atualizarRegrasIcmsEmMassa(
+    ids: string[],
+    dados: Partial<SimRegraIcms>,
+  ): Promise<{ sucesso: number; falhas: number }> {
+    let sucesso = 0
+    let falhas = 0
+    for (const id of ids) {
+      try {
+        await pb.collection('simulador_regras_icms').update(id, dados)
+        sucesso++
+      } catch (err) {
+        console.error(`Erro ao atualizar regra ICMS em massa ${id}:`, err)
         falhas++
       }
     }
