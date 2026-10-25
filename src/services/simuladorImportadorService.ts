@@ -737,15 +737,23 @@ export const simuladorImportadorService = {
           // Idempotência: busca se o registro já existe pelo código (chave principal) ou descrição
           let existente: any = null
           if (codigo) {
+            let filter = `codigo = '${codigo.replace(/'/g, "\\'")}'`
+            if (registroFormatado.embalagem) {
+              filter += ` && embalagem = '${registroFormatado.embalagem.replace(/'/g, "\\'")}'`
+            }
             const busca = await pb.collection('simulador_produtos').getList(1, 1, {
-              filter: `codigo = '${codigo.replace(/'/g, "\\'")}'`,
+              filter,
             })
             if (busca.items.length > 0) existente = busca.items[0]
           }
 
           if (!existente && descricao) {
+            let filter = `descricao = '${descricao.replace(/'/g, "\\'")}'`
+            if (registroFormatado.embalagem) {
+              filter += ` && embalagem = '${registroFormatado.embalagem.replace(/'/g, "\\'")}'`
+            }
             const busca = await pb.collection('simulador_produtos').getList(1, 1, {
-              filter: `descricao = '${descricao.replace(/'/g, "\\'")}'`,
+              filter,
             })
             if (busca.items.length > 0) existente = busca.items[0]
           }
