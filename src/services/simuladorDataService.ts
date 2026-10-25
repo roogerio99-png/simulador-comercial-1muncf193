@@ -66,6 +66,63 @@ export const simuladorDataService = {
     return resFallback.items[0] || null
   },
 
+  async listarProdutosBaseSimulador(options: {
+    page?: number
+    perPage?: number
+    filter?: string
+    sort?: string
+  }): Promise<{ items: SimProdutoBase[]; totalItems: number; totalPages: number }> {
+    const page = options.page || 1
+    const perPage = options.perPage || 25
+    const sort = options.sort || 'codigo'
+    const filter = options.filter || ''
+
+    const res = await pb.collection('simulador_produtos').getList<SimProdutoBase>(page, perPage, {
+      filter,
+      sort,
+      requestKey: null,
+    })
+    return {
+      items: res.items,
+      totalItems: res.totalItems,
+      totalPages: res.totalPages,
+    }
+  },
+
+  async listarRegrasIcmsSimulador(options: {
+    page?: number
+    perPage?: number
+    filter?: string
+    sort?: string
+  }): Promise<{ items: SimRegraIcms[]; totalItems: number; totalPages: number }> {
+    const page = options.page || 1
+    const perPage = options.perPage || 25
+    const sort = options.sort || 'uf_origem,uf_destino'
+    const filter = options.filter || ''
+
+    const res = await pb.collection('simulador_regras_icms').getList<SimRegraIcms>(page, perPage, {
+      filter,
+      sort,
+      requestKey: null,
+    })
+    return {
+      items: res.items,
+      totalItems: res.totalItems,
+      totalPages: res.totalPages,
+    }
+  },
+
+  async atualizarProdutoBaseSimulador(
+    id: string,
+    data: Partial<SimProdutoBase>,
+  ): Promise<SimProdutoBase> {
+    return await pb.collection('simulador_produtos').update<SimProdutoBase>(id, data)
+  },
+
+  async excluirProdutoBaseSimulador(id: string): Promise<boolean> {
+    return await pb.collection('simulador_produtos').delete(id)
+  },
+
   // Parametrização Fiscal Local (simulador_parametrizacao_fiscal)
   async listarParametrizacaoFiscal(page = 1, perPage = 30, filter?: string, sort = 'ncm') {
     return pb

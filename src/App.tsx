@@ -55,6 +55,7 @@ export default function App() {
           >
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/simulate" element={<Simulate />} />
+            <Route path="/simulador" element={<Simulate />} />
             <Route path="/products" element={<Products />} />
             <Route path="/regras" element={<Regras />} />
             <Route path="/importador" element={<Importador />} />
