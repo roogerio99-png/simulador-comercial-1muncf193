@@ -296,18 +296,7 @@ export const simuladorImportadorService = {
   },
 
   async excluirProdutosEmMassa(ids: string[]): Promise<{ sucesso: number; falhas: number }> {
-    let sucesso = 0
-    let falhas = 0
-    for (const id of ids) {
-      try {
-        await pb.collection('simulador_produtos').delete(id)
-        sucesso++
-      } catch (err) {
-        console.error(`Erro ao excluir produto ${id}:`, err)
-        falhas++
-      }
-    }
-    return { sucesso, falhas }
+    return executarExclusaoParalelaPorIds('simulador_produtos', ids, undefined, ids.length)
   },
 
   /**
@@ -321,8 +310,10 @@ export const simuladorImportadorService = {
   },
 
   /**
-   * Limpa integralmente a base simulador_produtos em lotes para não estourar tempo/limite da API.
-   * Suporta callback de progresso.
+   * Limpa integralmente a base simulador_produtos com alta performance:
+   * - Coleta em lotes maiores (até 500 ids por página com fields='id')
+   * - Deleção paralela controlada (concorrência de 6 workers com retries e backoff adaptativo para 429)
+   * - Notificação de progresso em tempo real
    */
   async limparBaseProdutos(
     onProgresso?: (progresso: {
@@ -330,62 +321,9 @@ export const simuladorImportadorService = {
       totalInicial: number
       emExecucao: boolean
     }) => void,
-    tamanhoLote = 200,
+    _tamanhoLoteLegado?: number,
   ): Promise<{ apagados: number; falhas: number }> {
-    // 1. Obter total inicial
-    const totalInicial = await this.contarTotalProdutos()
-    if (totalInicial === 0) {
-      if (onProgresso) onProgresso({ apagados: 0, totalInicial: 0, emExecucao: false })
-      return { apagados: 0, falhas: 0 }
-    }
-
-    let apagados = 0
-    let falhas = 0
-
-    // Loop de deleção enquanto houver registros
-    while (true) {
-      // Sempre buscamos a página 1 com tamanho de lote, pois ao deletar itens a base diminui
-      const pagina = await pb.collection('simulador_produtos').getList(1, tamanhoLote, {
-        fields: 'id',
-      })
-
-      if (pagina.items.length === 0) {
-        break
-      }
-
-      for (const item of pagina.items) {
-        try {
-          await pb.collection('simulador_produtos').delete(item.id)
-          apagados++
-        } catch (err) {
-          console.error(`Erro ao deletar registro de produto ${item.id}:`, err)
-          falhas++
-        }
-
-        if (onProgresso && (apagados % 20 === 0 || apagados === totalInicial)) {
-          onProgresso({
-            apagados,
-            totalInicial,
-            emExecucao: true,
-          })
-        }
-      }
-
-      // Se todas as tentativas deste lote falharem, interrompe para evitar loop infinito
-      if (apagados === 0 && falhas >= pagina.items.length) {
-        break
-      }
-    }
-
-    if (onProgresso) {
-      onProgresso({
-        apagados,
-        totalInicial,
-        emExecucao: false,
-      })
-    }
-
-    return { apagados, falhas }
+    return executarLimpezaOtimizadaColecao('simulador_produtos', onProgresso)
   },
 
   async atualizarProdutosEmMassa(
@@ -432,18 +370,7 @@ export const simuladorImportadorService = {
   },
 
   async excluirRegrasIcmsEmMassa(ids: string[]): Promise<{ sucesso: number; falhas: number }> {
-    let sucesso = 0
-    let falhas = 0
-    for (const id of ids) {
-      try {
-        await pb.collection('simulador_regras_icms').delete(id)
-        sucesso++
-      } catch (err) {
-        console.error(`Erro ao excluir regra ${id}:`, err)
-        falhas++
-      }
-    }
-    return { sucesso, falhas }
+    return executarExclusaoParalelaPorIds('simulador_regras_icms', ids, undefined, ids.length)
   },
 
   /**
