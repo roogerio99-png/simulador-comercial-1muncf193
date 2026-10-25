@@ -17,6 +17,7 @@ import {
   ShieldCheck,
   Eye,
   Percent,
+  UploadCloud,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
@@ -38,6 +39,7 @@ export function Layout() {
     { path: '/simulate', label: 'Simular Preço', icon: Calculator },
     { path: '/products', label: 'Meus Produtos', icon: Package },
     { path: '/regras', label: 'Regras Fiscais', icon: FileStack },
+    { path: '/importador', label: 'Importador', icon: UploadCloud },
     { path: '/historico', label: 'Histórico', icon: Clock },
     { path: '/configuracoes', label: 'Configurações', icon: Settings },
     ...(isAdmin ? [{ path: '/usuarios', label: 'Usuários & Convites', icon: Users }] : []),

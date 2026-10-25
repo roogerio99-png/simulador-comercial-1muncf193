@@ -15,6 +15,7 @@ import Dashboard from '@/pages/Dashboard'
 import Simulate from '@/pages/Simulate'
 import Products from '@/pages/Products'
 import Regras from '@/pages/Regras'
+import Importador from '@/pages/Importador'
 import Historico from '@/pages/Historico'
 import Configuracoes from '@/pages/Configuracoes'
 import Usuarios from '@/pages/Usuarios'
@@ -56,6 +57,7 @@ export default function App() {
             <Route path="/simulate" element={<Simulate />} />
             <Route path="/products" element={<Products />} />
             <Route path="/regras" element={<Regras />} />
+            <Route path="/importador" element={<Importador />} />
             <Route path="/historico" element={<Historico />} />
             <Route path="/configuracoes" element={<Configuracoes />} />
 
