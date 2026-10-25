@@ -413,7 +413,7 @@ export interface RespostaLimparBaseServidor {
  * Função auxiliar: limpeza de base via servidor (POST /backend/v1/simulador/limpar-base).
  * - Executa exclusão direta no banco pelo backend em segundos, sem tráfego registro a registro.
  * - Segurança absoluta: coleções como literais fixos ('simulador_produtos' ou 'simulador_regras_icms').
- * - Fallback automático para exclusão paralela cliente se a rota não estiver acessível.
+ * - SEM fallback silencioso: qualquer falha na chamada ou no servidor é propagada como erro real.
  */
 async function executarLimpezaBaseServidor(
   colecao: 'simulador_produtos' | 'simulador_regras_icms',
@@ -452,15 +452,26 @@ async function executarLimpezaBaseServidor(
     })
   }
 
-  // 2. Chamar o hook rápido de servidor do simulador
+  // 2. Chamar o hook rápido de servidor do simulador garantindo headers e autenticação
   try {
+    const headers: Record<string, string> = {}
+    if (pb.authStore?.token) {
+      headers['Authorization'] = `Bearer ${pb.authStore.token}`
+    }
+
     const res = await pb.send<RespostaLimparBaseServidor>('/backend/v1/simulador/limpar-base', {
       method: 'POST',
+      headers,
       body: {
         alvo: colecao,
         confirmar: 'LIMPAR',
       },
     })
+
+    if (!res || res.sucesso === false) {
+      const msgErro = res?.error || res?.mensagem || 'Falha ao executar limpeza no servidor.'
+      throw new Error(msgErro)
+    }
 
     const apagados = typeof res?.apagados === 'number' ? res.apagados : totalInicial
 
@@ -474,101 +485,26 @@ async function executarLimpezaBaseServidor(
 
     return { apagados, falhas: 0 }
   } catch (serverErr: any) {
-    console.warn(
+    console.error(
       `Falha na rota rápida do servidor (/backend/v1/simulador/limpar-base) para ${colecao}:`,
       serverErr,
     )
 
-    // Se o erro for de permissão (401/403) ou validação (400), propaga o erro imediatamente
-    const status = serverErr?.status || serverErr?.response?.status
+    if (onProgresso) {
+      onProgresso({ apagados: 0, totalInicial, emExecucao: false })
+    }
+
+    // Extrair mensagem de erro amigável e detalhada
     const msg =
       serverErr?.response?.data?.error ||
+      serverErr?.response?.error ||
       serverErr?.data?.error ||
+      serverErr?.data?.message ||
       serverErr?.message ||
-      'Erro ao executar limpeza no servidor'
+      'Erro ao executar limpeza no servidor. Verifique conexão e permissões de administrador.'
 
-    if (status === 401 || status === 403 || status === 400) {
-      if (onProgresso) {
-        onProgresso({ apagados: 0, totalInicial, emExecucao: false })
-      }
-      throw new Error(msg)
-    }
-
-    // Caso ocorra falha de rede ou rota temporariamente indisponível, fallback em lotes
-    return executarLimpezaFallbackCliente(colecao, totalInicial, onProgresso)
+    throw new Error(msg)
   }
-}
-
-/**
- * Fallback resiliente: exclusão paginada em lote no cliente se a rota do servidor falhar
- */
-async function executarLimpezaFallbackCliente(
-  colecao: 'simulador_produtos' | 'simulador_regras_icms',
-  totalInicial: number,
-  onProgresso?: (progresso: {
-    apagados: number
-    totalInicial: number
-    emExecucao: boolean
-  }) => void,
-): Promise<{ apagados: number; falhas: number }> {
-  let totalApagados = 0
-  let totalFalhas = 0
-  const tamanhoLoteIds = 500
-
-  while (true) {
-    let idsLote: string[] = []
-
-    try {
-      if (colecao === 'simulador_produtos') {
-        const pagina = await pb.collection('simulador_produtos').getList(1, tamanhoLoteIds, {
-          fields: 'id',
-        })
-        idsLote = pagina.items.map((it) => it.id)
-      } else {
-        const pagina = await pb.collection('simulador_regras_icms').getList(1, tamanhoLoteIds, {
-          fields: 'id',
-        })
-        idsLote = pagina.items.map((it) => it.id)
-      }
-    } catch (err) {
-      console.error(`Erro ao buscar página de IDs no fallback de ${colecao}:`, err)
-      break
-    }
-
-    if (idsLote.length === 0) break
-
-    const resultadoLote = await executarExclusaoParalelaPorIds(
-      colecao,
-      idsLote,
-      (p) => {
-        if (onProgresso) {
-          onProgresso({
-            apagados: totalApagados + p.apagados,
-            totalInicial,
-            emExecucao: true,
-          })
-        }
-      },
-      totalInicial,
-    )
-
-    totalApagados += resultadoLote.sucesso
-    totalFalhas += resultadoLote.falhas
-
-    if (resultadoLote.sucesso === 0 && resultadoLote.falhas >= idsLote.length) {
-      break
-    }
-  }
-
-  if (onProgresso) {
-    onProgresso({
-      apagados: totalApagados,
-      totalInicial,
-      emExecucao: false,
-    })
-  }
-
-  return { apagados: totalApagados, falhas: totalFalhas }
 }
 
 export const simuladorImportadorService = {
@@ -605,7 +541,7 @@ export const simuladorImportadorService = {
    * Limpa integralmente a base simulador_produtos via rota rápida do servidor:
    * - Execução direta no banco pelo servidor (POST /backend/v1/simulador/limpar-base)
    * - Resposta em segundos sem tráfego registro a registro
-   * - Resiliente com fallback para exclusão client-side se necessário
+   * - Erro real exibido ao usuário sem fallback silencioso
    */
   async limparBaseProdutos(
     onProgresso?: (progresso: {
@@ -679,7 +615,7 @@ export const simuladorImportadorService = {
    * Limpa integralmente a base simulador_regras_icms via rota rápida do servidor:
    * - Execução direta no banco pelo servidor (POST /backend/v1/simulador/limpar-base)
    * - Resposta em segundos sem tráfego registro a registro
-   * - Resiliente com fallback para exclusão client-side se necessário
+   * - Erro real exibido ao usuário sem fallback silencioso
    */
   async limparBaseRegrasIcms(
     onProgresso?: (progresso: {

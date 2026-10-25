@@ -14,8 +14,26 @@
 
 routerAdd('POST', '/backend/v1/simulador/limpar-base', (e) => {
   // 1. Validação de autenticação
-  const authRecord = e.auth
-  if (!authRecord || authRecord.collection().name !== 'simulador_comercial_users') {
+  let authRecord = e.auth
+  if (!authRecord) {
+    try {
+      const authHeader =
+        (e.request && e.request.header && e.request.header.get('Authorization')) || ''
+      const token = authHeader.replace(/^Bearer\s+/i, '').trim()
+      if (token) {
+        authRecord = $app.findAuthRecordByToken(token, 'simulador_comercial_users')
+      }
+    } catch (_) {}
+  }
+
+  const colName =
+    authRecord && authRecord.collection
+      ? typeof authRecord.collection === 'function'
+        ? authRecord.collection().name
+        : authRecord.collection.name
+      : ''
+
+  if (!authRecord || colName !== 'simulador_comercial_users') {
     return e.json(401, {
       sucesso: false,
       error: 'Autenticação requerida na plataforma do Simulador Comercial.',
@@ -23,7 +41,10 @@ routerAdd('POST', '/backend/v1/simulador/limpar-base', (e) => {
   }
 
   // 2. Validação de autorização (apenas Admin)
-  const role = authRecord.getString('role')
+  const role =
+    authRecord && typeof authRecord.getString === 'function'
+      ? authRecord.getString('role')
+      : authRecord.role
   if (role !== 'admin') {
     return e.json(403, {
       sucesso: false,
@@ -49,8 +70,11 @@ routerAdd('POST', '/backend/v1/simulador/limpar-base', (e) => {
   // 4. Exclusão rápida direta no banco utilizando STRINGS LITERAIS OBRIGATÓRIAS
   if (alvo === 'simulador_produtos') {
     try {
-      const countRes = $app.db().newQuery('SELECT COUNT(*) AS total FROM simulador_produtos').one()
-      totalApagados = (countRes && Number(countRes.total)) || 0
+      try {
+        totalApagados = $app.countRecords('simulador_produtos')
+      } catch (_) {
+        totalApagados = 0
+      }
 
       $app.db().newQuery('DELETE FROM simulador_produtos').execute()
 
@@ -68,11 +92,11 @@ routerAdd('POST', '/backend/v1/simulador/limpar-base', (e) => {
     }
   } else if (alvo === 'simulador_regras_icms') {
     try {
-      const countRes = $app
-        .db()
-        .newQuery('SELECT COUNT(*) AS total FROM simulador_regras_icms')
-        .one()
-      totalApagados = (countRes && Number(countRes.total)) || 0
+      try {
+        totalApagados = $app.countRecords('simulador_regras_icms')
+      } catch (_) {
+        totalApagados = 0
+      }
 
       $app.db().newQuery('DELETE FROM simulador_regras_icms').execute()
 
