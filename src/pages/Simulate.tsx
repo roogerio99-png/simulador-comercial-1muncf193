@@ -165,7 +165,6 @@ export function Simulate() {
   const [aliquotaIcmsCreditoCompra, setAliquotaIcmsCreditoCompra] = useState<number>(4.0)
   const [regraIcmsCompraAtual, setRegraIcmsCompraAtual] = useState<SimRegraIcms | null>(null)
   const [alertaRegraCompra, setAlertaRegraCompra] = useState<string | null>(null)
-  const [editouIcmsCompraManualmente, setEditouIcmsCompraManualmente] = useState<boolean>(false)
 
   // ---------------------------------------------------------------------------
   // 3. OPERAÇÃO DE VENDA (REVENDA COMERCIAL)
@@ -352,15 +351,13 @@ export function Simulate() {
 
         if (regra) {
           setAlertaRegraCompra(null)
-          // Se o usuário não travou em modo manual, atualiza automaticamente
-          if (!editouIcmsCompraManualmente) {
-            const aliq =
-              regra.aliquota_efetiva !== undefined && regra.aliquota_efetiva !== null
-                ? Number(regra.aliquota_efetiva)
-                : Number(regra.aliquota_icms) || 0
-            setAliquotaIcmsCreditoCompra(aliq)
-          }
+          const aliq =
+            regra.aliquota_efetiva !== undefined && regra.aliquota_efetiva !== null
+              ? Number(regra.aliquota_efetiva)
+              : Number(regra.aliquota_icms) || 0
+          setAliquotaIcmsCreditoCompra(aliq)
         } else {
+          setAliquotaIcmsCreditoCompra(0)
           const aviso = `Sem regra fiscal para ${ufOrigemCompra} → ${ufDestinoCompra}${
             produtoSelecionado.gr_trib ? ` (GrTrib ${produtoSelecionado.gr_trib})` : ''
           }.`
@@ -377,7 +374,7 @@ export function Simulate() {
     return () => {
       cancelado = true
     }
-  }, [ufOrigemCompra, ufDestinoCompra, produtoSelecionado, editouIcmsCompraManualmente])
+  }, [ufOrigemCompra, ufDestinoCompra, produtoSelecionado])
 
   // Executa Simulação Comercial Segregada (Compra, Venda e Resultado)
   const handleSimular = async () => {
@@ -419,24 +416,22 @@ export function Simulate() {
       setRegraIcmsCompraAtual(regraCompra)
       setRegraIcmsAtual(regraVenda)
 
-      // Atualiza alíquota da compra se não for manual
-      let aliqCompraUsada = aliquotaIcmsCreditoCompra
-      if (regraCompra && !editouIcmsCompraManualmente) {
+      // Atualiza alíquota da compra exclusivamente pela regra fiscal
+      let aliqCompraUsada = 0
+      if (regraCompra) {
         aliqCompraUsada =
           regraCompra.aliquota_efetiva !== undefined && regraCompra.aliquota_efetiva !== null
             ? Number(regraCompra.aliquota_efetiva)
             : Number(regraCompra.aliquota_icms) || 0
         setAliquotaIcmsCreditoCompra(aliqCompraUsada)
-      }
-
-      if (!regraCompra) {
+        setAlertaRegraCompra(null)
+      } else {
+        setAliquotaIcmsCreditoCompra(0)
         setAlertaRegraCompra(
           `Sem regra fiscal para ${ufOrigemCompra} → ${ufDestinoCompra}${
             produtoSelecionado.gr_trib ? ` (GrTrib ${produtoSelecionado.gr_trib})` : ''
           }.`,
         )
-      } else {
-        setAlertaRegraCompra(null)
       }
 
       const res = executarCalculoSimulador({
@@ -545,7 +540,6 @@ export function Simulate() {
     setModalidadeFreteCompra('FOB')
     setUfOrigemCompra('SP')
     setUfDestinoCompra('SP')
-    setEditouIcmsCompraManualmente(false)
     setAlertaRegraCompra(null)
     setFreteCompra(1200)
     setSeguroCompra(200)
@@ -1113,10 +1107,7 @@ export function Simulate() {
                       <div className="grid grid-cols-2 gap-1.5">
                         <select
                           value={ufOrigemCompra}
-                          onChange={(e) => {
-                            setUfOrigemCompra(e.target.value)
-                            setEditouIcmsCompraManualmente(false)
-                          }}
+                          onChange={(e) => setUfOrigemCompra(e.target.value)}
                           className="h-8 text-xs rounded-md border border-sky-200 bg-white px-2 font-medium"
                           title="UF Origem (da aquisição/fornecedor)"
                         >
@@ -1128,10 +1119,7 @@ export function Simulate() {
                         </select>
                         <select
                           value={ufDestinoCompra}
-                          onChange={(e) => {
-                            setUfDestinoCompra(e.target.value)
-                            setEditouIcmsCompraManualmente(false)
-                          }}
+                          onChange={(e) => setUfDestinoCompra(e.target.value)}
                           className="h-8 text-xs rounded-md border border-sky-200 bg-white px-2 font-medium"
                           title="UF Destino (onde o comprador está)"
                         >
@@ -1144,55 +1132,37 @@ export function Simulate() {
                       </div>
                     </div>
 
-                    {/* Crédito ICMS de Entrada / Carga Tributária da Compra */}
+                    {/* Crédito ICMS de Entrada / Carga Tributária da Compra (Bloqueado/Automático) */}
                     <div className="space-y-1">
                       <Label className="text-xs font-semibold text-gray-800 flex items-center justify-between">
-                        <span title="Carga Tributária ICMS de Entrada">
+                        <span title="Carga Tributária ICMS de Entrada (Regra Fiscal)">
                           Crédito ICMS Entrada (%)
                         </span>
-                        <span className="text-[10px] text-emerald-700 font-bold">
-                          {regraIcmsCompraAtual && !editouIcmsCompraManualmente
-                            ? 'Regra Fiscal'
-                            : editouIcmsCompraManualmente
-                              ? 'Manual'
-                              : creditarIcmsCompra
-                                ? 'Aproveita'
-                                : 'Não'}
+                        <span className="text-[10px] text-sky-700 font-bold">
+                          {regraIcmsCompraAtual ? 'Regra Fiscal' : 'Sem regra'}
                         </span>
                       </Label>
                       <div className="relative">
-                        <Input
-                          type="number"
-                          step="0.1"
-                          min="0"
-                          value={aliquotaIcmsCreditoCompra}
-                          onChange={(e) => {
-                            setEditouIcmsCompraManualmente(true)
-                            setAliquotaIcmsCreditoCompra(Math.max(0, Number(e.target.value)))
-                          }}
-                          className={`h-8 text-xs bg-white font-medium ${
-                            alertaRegraCompra ? 'border-amber-400 bg-amber-50/20' : 'border-sky-200'
+                        <input
+                          type="text"
+                          readOnly
+                          disabled
+                          value={regraIcmsCompraAtual ? `${aliquotaIcmsCreditoCompra}%` : '0%'}
+                          aria-readonly="true"
+                          title="Preenchido automaticamente pela Regra Fiscal (bloqueado para edição)"
+                          className={`w-full h-8 text-xs rounded-md border px-2.5 font-bold cursor-not-allowed select-none opacity-90 shadow-inner ${
+                            alertaRegraCompra
+                              ? 'border-amber-300 bg-amber-50/70 text-amber-950'
+                              : 'border-sky-200 bg-sky-50/70 text-sky-950'
                           }`}
                         />
-                        {editouIcmsCompraManualmente && regraIcmsCompraAtual && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditouIcmsCompraManualmente(false)
-                              const aliq =
-                                regraIcmsCompraAtual.aliquota_efetiva !== undefined &&
-                                regraIcmsCompraAtual.aliquota_efetiva !== null
-                                  ? Number(regraIcmsCompraAtual.aliquota_efetiva)
-                                  : Number(regraIcmsCompraAtual.aliquota_icms) || 0
-                              setAliquotaIcmsCreditoCompra(aliq)
-                            }}
-                            className="absolute right-1 top-1 text-[10px] bg-sky-100 hover:bg-sky-200 text-sky-800 px-1.5 py-0.5 rounded font-mono"
-                            title="Restaurar alíquota vinda da Regra Fiscal"
-                          >
-                            Restaurar
-                          </button>
-                        )}
+                        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-sky-700 bg-sky-100/80 px-1 rounded font-mono font-semibold pointer-events-none">
+                          Auto
+                        </span>
                       </div>
+                      <p className="text-[10px] text-sky-700 leading-tight">
+                        Alíquota definida exclusivamente pela Regra Fiscal correspondente.
+                      </p>
                     </div>
                   </div>
 
@@ -1206,7 +1176,7 @@ export function Simulate() {
                         </span>
                         <span>{alertaRegraCompra}</span>{' '}
                         <span className="text-[11px] text-amber-800">
-                          (Verifique ou ajuste a alíquota de ICMS de entrada manualmente acima).
+                          (Cadastre a regra fiscal correspondente na aba Regras Fiscais).
                         </span>
                       </div>
                     </div>
