@@ -279,6 +279,10 @@ export interface ResultadoCompraSegregada {
   // Tributos / Créditos de Entrada
   icmsCreditoAliquota: number
   icmsCreditoValor: number
+  temRegraIcms?: boolean
+  statusRegraIcms?: 'exata_grtrib' | 'fallback_uf' | 'sem_regra'
+  avisoIcms?: string
+  regraIcms?: RegraIcmsSimulador | null
   pisCreditoAliquota: number
   pisCreditoValor: number
   cofinsCreditoAliquota: number
@@ -636,13 +640,58 @@ export function executarCalculoSimulador(input: SimuladorInput): SimuladorResult
   const totalDespesasCompra = freteCompraReais + seguroCompra + outrasDespesasCompra
   const custoAquisicaoMercadoria = valorMercadoriaCompraReais + totalDespesasCompra
 
+  // Localização geográfica da compra
+  const ufOrigemCompra = (compraIn.ufOrigem || 'SP').trim().toUpperCase()
+  const ufDestinoCompra = (compraIn.ufDestino || 'SP').trim().toUpperCase()
+
+  // Regra ICMS na Entrada (Compra)
+  const regraIcmsCompra = compraIn.regraIcms
+  let temRegraIcmsCompra = false
+  let statusRegraIcmsCompra: 'exata_grtrib' | 'fallback_uf' | 'sem_regra' = 'sem_regra'
+  let avisoIcmsCompra: string | undefined
+
+  if (regraIcmsCompra) {
+    const rCompra = regraIcmsCompra
+    const regraGrTrib = (rCompra.grupo_tributario_codigo || '').trim()
+
+    if (grTrib && regraGrTrib && grTrib === regraGrTrib) {
+      statusRegraIcmsCompra = 'exata_grtrib'
+      temRegraIcmsCompra = true
+    } else if (!grTrib && regraGrTrib) {
+      statusRegraIcmsCompra = 'fallback_uf'
+      temRegraIcmsCompra = true
+      alertas.push(
+        `Compra: Produto sem Grupo Tributário (GrTrib). Aplicada regra da UF com GrTrib ${regraGrTrib}.`,
+      )
+    } else if (grTrib && !regraGrTrib) {
+      statusRegraIcmsCompra = 'fallback_uf'
+      temRegraIcmsCompra = true
+      alertas.push(
+        `Compra: Sem regra específica para GrTrib "${grTrib}" em ${ufOrigemCompra} → ${ufDestinoCompra}. Aplicada regra geral da UF.`,
+      )
+    } else if (grTrib && regraGrTrib && grTrib !== regraGrTrib) {
+      statusRegraIcmsCompra = 'fallback_uf'
+      temRegraIcmsCompra = true
+      alertas.push(
+        `Compra: Atenção: Produto é GrTrib "${grTrib}", mas a regra de compra pertence a GrTrib "${regraGrTrib}" para ${ufOrigemCompra} → ${ufDestinoCompra}.`,
+      )
+    } else {
+      statusRegraIcmsCompra = 'fallback_uf'
+      temRegraIcmsCompra = true
+    }
+  } else {
+    temRegraIcmsCompra = false
+    statusRegraIcmsCompra = 'sem_regra'
+    avisoIcmsCompra = `Compra: Sem regra de ICMS cadastrada para origem ${ufOrigemCompra} → destino ${ufDestinoCompra}${grTrib ? ` (GrTrib ${grTrib})` : ''}.`
+    alertas.push(avisoIcmsCompra)
+  }
+
   // Créditos Tributários na Entrada (Compra)
   let icmsCreditoAliq = 0
   if (compraIn.aliquotaIcmsCreditoManual !== undefined) {
     icmsCreditoAliq = Number(compraIn.aliquotaIcmsCreditoManual)
-  } else if (compraIn.regraIcms) {
-    icmsCreditoAliq =
-      Number(compraIn.regraIcms.aliquota_efetiva ?? compraIn.regraIcms.aliquota_icms) || 0
+  } else if (regraIcmsCompra) {
+    icmsCreditoAliq = Number(regraIcmsCompra.aliquota_efetiva ?? regraIcmsCompra.aliquota_icms) || 0
   } else if (compraIn.creditarIcms !== false) {
     icmsCreditoAliq = 4.0
   }
@@ -681,8 +730,8 @@ export function executarCalculoSimulador(input: SimuladorInput): SimuladorResult
     dataOperacao: dataCompraIso,
     prazoDias: prazoCompraDias,
     dataVencimento: dataVencimentoCompraIso,
-    ufOrigem: compraIn.ufOrigem || 'SP',
-    ufDestino: compraIn.ufDestino || 'SP',
+    ufOrigem: ufOrigemCompra,
+    ufDestino: ufDestinoCompra,
     moedaOriginal: moedaCompra,
     ptaxAplicada: ptaxCompra,
     precoUnitarioOriginal: precoUnitarioCompra,
@@ -698,6 +747,10 @@ export function executarCalculoSimulador(input: SimuladorInput): SimuladorResult
     jurosValor: jurosCompraValor,
     icmsCreditoAliquota: icmsCreditoAliq,
     icmsCreditoValor: icmsCreditoValor,
+    temRegraIcms: temRegraIcmsCompra,
+    statusRegraIcms: statusRegraIcmsCompra,
+    avisoIcms: avisoIcmsCompra,
+    regraIcms: regraIcmsCompra,
     pisCreditoAliquota: pisCreditoAliq,
     pisCreditoValor: pisCreditoValor,
     cofinsCreditoAliquota: cofinsCreditoAliq,
@@ -1294,7 +1347,7 @@ export function executarCalculoSimulador(input: SimuladorInput): SimuladorResult
 
   // 7. MEMÓRIA DE CÁLCULO SEPARADA POR BLOCOS
   memoriaCalculo.push(
-    `--- 1. OPERAÇÃO DE COMPRA (${dataCompraIso} | Vencimento ${dataVencimentoCompraIso} em ${prazoCompraDias} dias) ---`,
+    `--- 1. OPERAÇÃO DE COMPRA (${dataCompraIso} | Vencimento ${dataVencimentoCompraIso} em ${prazoCompraDias} dias | Rota: ${ufOrigemCompra} → ${ufDestinoCompra}) ---`,
   )
   memoriaCalculo.push(
     `Mercadoria: ${volumeTotal.toLocaleString('pt-BR')} ${unid} × ${moedaCompra === 'USD' ? `US$ ${precoUnitarioCompra.toFixed(2)} (PTAX R$ ${ptaxCompra.toFixed(4)}) = ` : ''}R$ ${precoUnitarioCompraReais.toFixed(2)} = R$ ${valorMercadoriaCompraReais.toFixed(2)}`,
@@ -1303,7 +1356,10 @@ export function executarCalculoSimulador(input: SimuladorInput): SimuladorResult
     `Despesas de Aquisição: Frete (${modalidadeFreteCompra}) R$ ${freteCompraReais.toFixed(2)} + Seguro R$ ${seguroCompra.toFixed(2)} + Outros R$ ${outrasDespesasCompra.toFixed(2)} = R$ ${totalDespesasCompra.toFixed(2)}`,
   )
   memoriaCalculo.push(
-    `Custo Mercadoria: R$ ${custoAquisicaoMercadoria.toFixed(2)} | Juros da Compra: taxa ${taxaJurosCompraMensal.toFixed(2)}% a.m. (efetiva ${taxaEfetivaCompraPerc.toFixed(2)}% em ${prazoCompraDias}d) = R$ ${jurosCompraValor.toFixed(2)} | Custo Total c/ Juros: R$ ${custoTotalCompraComJuros.toFixed(2)} (R$ ${custoUnitarioTotalCompra.toFixed(2)}/${unid})`,
+    `Crédito de ICMS Entrada (${ufOrigemCompra} → ${ufDestinoCompra}): Alíquota Regra Fiscal/Aplicada ${icmsCreditoAliq.toFixed(2)}% sobre Base R$ ${baseCreditoIcms.toFixed(2)} = Crédito ICMS R$ ${icmsCreditoValor.toFixed(2)} (Total Créditos Fiscais: R$ ${totalCreditosTributarios.toFixed(2)})`,
+  )
+  memoriaCalculo.push(
+    `Custo Mercadoria: R$ ${custoAquisicaoMercadoria.toFixed(2)} (Líquido s/ impostos: R$ ${custoAquisicaoLiquidoSemTributos.toFixed(2)}) | Juros da Compra: taxa ${taxaJurosCompraMensal.toFixed(2)}% a.m. (efetiva ${taxaEfetivaCompraPerc.toFixed(2)}% em ${prazoCompraDias}d) = R$ ${jurosCompraValor.toFixed(2)} | Custo Total c/ Juros: R$ ${custoTotalCompraComJuros.toFixed(2)} (R$ ${custoUnitarioTotalCompra.toFixed(2)}/${unid})`,
   )
 
   memoriaCalculo.push(

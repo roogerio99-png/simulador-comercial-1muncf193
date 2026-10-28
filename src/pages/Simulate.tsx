@@ -154,6 +154,8 @@ export function Simulate() {
   const [prazoCompraDias, setPrazoCompraDias] = useState<number>(30)
   const [precoUnitarioCompra, setPrecoUnitarioCompra] = useState<number>(28.0)
   const [moedaCompra, setMoedaCompra] = useState<'BRL' | 'USD'>('BRL')
+  const [ufOrigemCompra, setUfOrigemCompra] = useState<string>('SP')
+  const [ufDestinoCompra, setUfDestinoCompra] = useState<string>('SP')
   const [modalidadeFreteCompra, setModalidadeFreteCompra] = useState<ModalidadeFrete>('FOB')
   const [freteCompra, setFreteCompra] = useState<number>(1200)
   const [seguroCompra, setSeguroCompra] = useState<number>(200)
@@ -161,6 +163,9 @@ export function Simulate() {
   const [taxaJurosCompraMensal, setTaxaJurosCompraMensal] = useState<number>(1.2) // % a.m.
   const [creditarIcmsCompra, setCreditarIcmsCompra] = useState<boolean>(true)
   const [aliquotaIcmsCreditoCompra, setAliquotaIcmsCreditoCompra] = useState<number>(4.0)
+  const [regraIcmsCompraAtual, setRegraIcmsCompraAtual] = useState<SimRegraIcms | null>(null)
+  const [alertaRegraCompra, setAlertaRegraCompra] = useState<string | null>(null)
+  const [editouIcmsCompraManualmente, setEditouIcmsCompraManualmente] = useState<boolean>(false)
 
   // ---------------------------------------------------------------------------
   // 3. OPERAÇÃO DE VENDA (REVENDA COMERCIAL)
@@ -330,6 +335,49 @@ export function Simulate() {
     produtoSelecionado?.origem?.toLowerCase().includes('imp') ||
     produtoSelecionado?.descricao.toUpperCase().includes('(IMP)')
 
+  // Atualiza regra fiscal da compra e alíquota de ICMS correspondente
+  useEffect(() => {
+    let cancelado = false
+    const atualizarRegraCompra = async () => {
+      if (!produtoSelecionado) return
+      try {
+        const regra = await simuladorDataService.obterRegraIcms(
+          ufOrigemCompra,
+          ufDestinoCompra,
+          produtoSelecionado.gr_trib,
+        )
+        if (cancelado) return
+        setRegraIcmsCompraAtual(regra)
+
+        if (regra) {
+          setAlertaRegraCompra(null)
+          // Se o usuário não travou em modo manual, atualiza automaticamente
+          if (!editouIcmsCompraManualmente) {
+            const aliq =
+              regra.aliquota_efetiva !== undefined && regra.aliquota_efetiva !== null
+                ? Number(regra.aliquota_efetiva)
+                : Number(regra.aliquota_icms) || 0
+            setAliquotaIcmsCreditoCompra(aliq)
+          }
+        } else {
+          const aviso = `Sem regra fiscal para ${ufOrigemCompra} → ${ufDestinoCompra}${
+            produtoSelecionado.gr_trib ? ` (GrTrib ${produtoSelecionado.gr_trib})` : ''
+          }.`
+          setAlertaRegraCompra(aviso)
+        }
+      } catch (e) {
+        if (!cancelado) {
+          console.warn('Erro ao buscar regra ICMS de compra:', e)
+        }
+      }
+    }
+
+    atualizarRegraCompra()
+    return () => {
+      cancelado = true
+    }
+  }, [ufOrigemCompra, ufDestinoCompra, produtoSelecionado, editouIcmsCompraManualmente])
+
   // Executa Simulação Comercial Segregada (Compra, Venda e Resultado)
   const handleSimular = async () => {
     if (!produtoSelecionado) {
@@ -353,12 +401,42 @@ export function Simulate() {
 
     setCalculando(true)
     try {
-      const regra = await simuladorDataService.obterRegraIcms(
-        ufOrigemVenda,
-        ufDestinoVenda,
-        produtoSelecionado.gr_trib,
-      )
-      setRegraIcmsAtual(regra)
+      // Busca regras das duas pontas simultaneamente
+      const [regraCompra, regraVenda] = await Promise.all([
+        simuladorDataService.obterRegraIcms(
+          ufOrigemCompra,
+          ufDestinoCompra,
+          produtoSelecionado.gr_trib,
+        ),
+        simuladorDataService.obterRegraIcms(
+          ufOrigemVenda,
+          ufDestinoVenda,
+          produtoSelecionado.gr_trib,
+        ),
+      ])
+
+      setRegraIcmsCompraAtual(regraCompra)
+      setRegraIcmsAtual(regraVenda)
+
+      // Atualiza alíquota da compra se não for manual
+      let aliqCompraUsada = aliquotaIcmsCreditoCompra
+      if (regraCompra && !editouIcmsCompraManualmente) {
+        aliqCompraUsada =
+          regraCompra.aliquota_efetiva !== undefined && regraCompra.aliquota_efetiva !== null
+            ? Number(regraCompra.aliquota_efetiva)
+            : Number(regraCompra.aliquota_icms) || 0
+        setAliquotaIcmsCreditoCompra(aliqCompraUsada)
+      }
+
+      if (!regraCompra) {
+        setAlertaRegraCompra(
+          `Sem regra fiscal para ${ufOrigemCompra} → ${ufDestinoCompra}${
+            produtoSelecionado.gr_trib ? ` (GrTrib ${produtoSelecionado.gr_trib})` : ''
+          }.`,
+        )
+      } else {
+        setAlertaRegraCompra(null)
+      }
 
       const res = executarCalculoSimulador({
         produto: produtoSelecionado,
@@ -376,13 +454,16 @@ export function Simulate() {
           precoUnitario: precoUnitarioCompra,
           moeda: moedaCompra,
           ptaxManual: isProdutoImportado ? ptaxManual : 1.0,
+          ufOrigem: ufOrigemCompra,
+          ufDestino: ufDestinoCompra,
+          regraIcms: regraCompra,
           modalidadeFrete: modalidadeFreteCompra,
           frete: freteCompra,
           seguro: seguroCompra,
           outrasDespesas: outrasDespesasCompra,
           taxaJurosMensalPerc: taxaJurosCompraMensal,
           creditarIcms: creditarIcmsCompra,
-          aliquotaIcmsCreditoManual: aliquotaIcmsCreditoCompra,
+          aliquotaIcmsCreditoManual: aliqCompraUsada,
         },
 
         // Bloco Segregado de VENDA
@@ -402,7 +483,7 @@ export function Simulate() {
           comissaoPerc: comissaoVendaPerc,
           taxaJurosMensalPerc: taxaJurosVendaMensal,
           margemAlvoPerc,
-          regraIcms: regra,
+          regraIcms: regraVenda,
           considerarReoneracao2026,
           usarAliquotaReformaPlena,
         },
@@ -412,8 +493,14 @@ export function Simulate() {
 
       if (!res.temRegraIcms) {
         toast({
-          title: 'Aviso: Regra ICMS não cadastrada',
+          title: 'Aviso: Regra ICMS de venda não cadastrada',
           description: `Sem regra específica para ${ufOrigemVenda} → ${ufDestinoVenda}. Foi aplicada alíquota padrão estimada.`,
+        })
+      }
+      if (!regraCompra) {
+        toast({
+          title: 'Aviso: Regra ICMS de compra não cadastrada',
+          description: `Sem regra para aquisição ${ufOrigemCompra} → ${ufDestinoCompra}. Verifique a alíquota de crédito de entrada.`,
         })
       }
     } catch (err: unknown) {
@@ -436,6 +523,8 @@ export function Simulate() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     produtoSelecionado,
+    ufOrigemCompra,
+    ufDestinoCompra,
     ufOrigemVenda,
     ufDestinoVenda,
     modalidadeFreteVenda,
@@ -453,6 +542,10 @@ export function Simulate() {
     setDataCompra(hoje)
     setPrazoCompraDias(30)
     setModalidadeFreteCompra('FOB')
+    setUfOrigemCompra('SP')
+    setUfDestinoCompra('SP')
+    setEditouIcmsCompraManualmente(false)
+    setAlertaRegraCompra(null)
     setFreteCompra(1200)
     setSeguroCompra(200)
     setOutrasDespesasCompra(100)
@@ -868,7 +961,7 @@ export function Simulate() {
                     </div>
                   </div>
 
-                  {/* Campos da Compra */}
+                  {/* Campos da Compra - Linha 1 (Prazos, Preço e Juros) */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
                     {/* Data da Compra */}
                     <div className="space-y-1">
@@ -942,7 +1035,10 @@ export function Simulate() {
                         className="h-8 text-xs border-sky-200 bg-white"
                       />
                     </div>
+                  </div>
 
+                  {/* Campos da Compra - Linha 2 (Logística, Rota Fiscal e ICMS) */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3 text-xs pt-1">
                     {/* Modalidade Frete Compra */}
                     <div className="space-y-1">
                       <Label className="text-xs font-semibold text-gray-800 flex items-center gap-1">
@@ -1002,26 +1098,149 @@ export function Simulate() {
                       </div>
                     </div>
 
-                    {/* Crédito ICMS de Entrada */}
+                    {/* Rota Fiscal de Compra: UF Origem e UF Destino */}
                     <div className="space-y-1">
                       <Label className="text-xs font-semibold text-gray-800 flex items-center justify-between">
-                        <span>Crédito ICMS Entrada (%)</span>
-                        <span className="text-[10px] text-emerald-700 font-bold">
-                          {creditarIcmsCompra ? 'Aproveita' : 'Não'}
+                        <span className="flex items-center gap-1">
+                          <Compass className="w-3.5 h-3.5 text-sky-700" />
+                          UF Origem → Destino
+                        </span>
+                        <span className="text-[10px] text-sky-700 font-mono">
+                          {ufOrigemCompra} → {ufDestinoCompra}
                         </span>
                       </Label>
-                      <Input
-                        type="number"
-                        step="0.1"
-                        min="0"
-                        value={aliquotaIcmsCreditoCompra}
-                        onChange={(e) =>
-                          setAliquotaIcmsCreditoCompra(Math.max(0, Number(e.target.value)))
-                        }
-                        className="h-8 text-xs border-sky-200 bg-white"
-                      />
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <select
+                          value={ufOrigemCompra}
+                          onChange={(e) => {
+                            setUfOrigemCompra(e.target.value)
+                            setEditouIcmsCompraManualmente(false)
+                          }}
+                          className="h-8 text-xs rounded-md border border-sky-200 bg-white px-2 font-medium"
+                          title="UF Origem (da aquisição/fornecedor)"
+                        >
+                          {UFS_BRASIL.map((uf) => (
+                            <option key={uf} value={uf}>
+                              {uf}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          value={ufDestinoCompra}
+                          onChange={(e) => {
+                            setUfDestinoCompra(e.target.value)
+                            setEditouIcmsCompraManualmente(false)
+                          }}
+                          className="h-8 text-xs rounded-md border border-sky-200 bg-white px-2 font-medium"
+                          title="UF Destino (onde o comprador está)"
+                        >
+                          {UFS_BRASIL.map((uf) => (
+                            <option key={uf} value={uf}>
+                              {uf}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Crédito ICMS de Entrada / Carga Tributária da Compra */}
+                    <div className="space-y-1">
+                      <Label className="text-xs font-semibold text-gray-800 flex items-center justify-between">
+                        <span title="Carga Tributária ICMS de Entrada">
+                          Crédito ICMS Entrada (%)
+                        </span>
+                        <span className="text-[10px] text-emerald-700 font-bold">
+                          {regraIcmsCompraAtual && !editouIcmsCompraManualmente
+                            ? 'Regra Fiscal'
+                            : editouIcmsCompraManualmente
+                              ? 'Manual'
+                              : creditarIcmsCompra
+                                ? 'Aproveita'
+                                : 'Não'}
+                        </span>
+                      </Label>
+                      <div className="relative">
+                        <Input
+                          type="number"
+                          step="0.1"
+                          min="0"
+                          value={aliquotaIcmsCreditoCompra}
+                          onChange={(e) => {
+                            setEditouIcmsCompraManualmente(true)
+                            setAliquotaIcmsCreditoCompra(Math.max(0, Number(e.target.value)))
+                          }}
+                          className={`h-8 text-xs bg-white font-medium ${
+                            alertaRegraCompra ? 'border-amber-400 bg-amber-50/20' : 'border-sky-200'
+                          }`}
+                        />
+                        {editouIcmsCompraManualmente && regraIcmsCompraAtual && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditouIcmsCompraManualmente(false)
+                              const aliq =
+                                regraIcmsCompraAtual.aliquota_efetiva !== undefined &&
+                                regraIcmsCompraAtual.aliquota_efetiva !== null
+                                  ? Number(regraIcmsCompraAtual.aliquota_efetiva)
+                                  : Number(regraIcmsCompraAtual.aliquota_icms) || 0
+                              setAliquotaIcmsCreditoCompra(aliq)
+                            }}
+                            className="absolute right-1 top-1 text-[10px] bg-sky-100 hover:bg-sky-200 text-sky-800 px-1.5 py-0.5 rounded font-mono"
+                            title="Restaurar alíquota vinda da Regra Fiscal"
+                          >
+                            Restaurar
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
+
+                  {/* Aviso visível de Regra Fiscal de Compra */}
+                  {alertaRegraCompra ? (
+                    <div className="flex items-center gap-2 p-2.5 rounded-lg border border-amber-300 bg-amber-50 text-amber-900 text-xs">
+                      <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                      <div className="flex-1">
+                        <span className="font-semibold">
+                          Regra de ICMS de compra não encontrada:{' '}
+                        </span>
+                        <span>{alertaRegraCompra}</span>{' '}
+                        <span className="text-[11px] text-amber-800">
+                          (Verifique ou ajuste a alíquota de ICMS de entrada manualmente acima).
+                        </span>
+                      </div>
+                    </div>
+                  ) : regraIcmsCompraAtual ? (
+                    <div className="flex items-center justify-between p-2 rounded-lg border border-sky-200 bg-sky-50/70 text-sky-950 text-[11px]">
+                      <div className="flex items-center gap-1.5">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-sky-700 shrink-0" />
+                        <span>
+                          <strong>Regra Fiscal Aplicada:</strong> {ufOrigemCompra} →{' '}
+                          {ufDestinoCompra}
+                          {regraIcmsCompraAtual.grupo_tributario_codigo
+                            ? ` (GrTrib: ${regraIcmsCompraAtual.grupo_tributario_codigo})`
+                            : ' (Geral)'}
+                          {' — '}Alíquota Nominal: {regraIcmsCompraAtual.aliquota_icms}%
+                          {regraIcmsCompraAtual.reducao_base !== undefined &&
+                          regraIcmsCompraAtual.reducao_base !== null
+                            ? ` | Redução: ${regraIcmsCompraAtual.reducao_base}%`
+                            : ''}
+                          {regraIcmsCompraAtual.aliquota_efetiva !== undefined &&
+                          regraIcmsCompraAtual.aliquota_efetiva !== null
+                            ? ` | Alíquota Efetiva: ${regraIcmsCompraAtual.aliquota_efetiva}%`
+                            : ''}
+                        </span>
+                      </div>
+                      <Badge
+                        variant="outline"
+                        className="text-[10px] border-sky-300 text-sky-800 bg-white"
+                      >
+                        ICMS Carga{' '}
+                        {regraIcmsCompraAtual.aliquota_efetiva ??
+                          regraIcmsCompraAtual.aliquota_icms}
+                        %
+                      </Badge>
+                    </div>
+                  ) : null}
                 </div>
 
                 {/* ----------------------------------------------------------- */}
@@ -1513,6 +1732,12 @@ export function Simulate() {
                     </CardHeader>
                     <CardContent className="p-4 space-y-2 text-xs">
                       <div className="flex justify-between py-1 border-b border-gray-100">
+                        <span className="text-gray-600">Rota Fiscal Compra:</span>
+                        <span className="font-mono font-semibold text-sky-950">
+                          {resultado.compra.ufOrigem} → {resultado.compra.ufDestino}
+                        </span>
+                      </div>
+                      <div className="flex justify-between py-1 border-b border-gray-100">
                         <span className="text-gray-600">Data da Compra:</span>
                         <span className="font-mono font-medium">
                           {resultado.compra.dataOperacao}
@@ -1536,6 +1761,25 @@ export function Simulate() {
                         <span className="text-gray-600">Valor Mercadoria Total:</span>
                         <span className="font-mono font-semibold">
                           {resultado.compra.valorMercadoriaReais.toLocaleString('pt-BR', {
+                            style: 'currency',
+                            currency: 'BRL',
+                          })}
+                        </span>
+                      </div>
+                      <div className="flex justify-between py-1 border-b border-gray-100 text-emerald-800 bg-emerald-50/40 px-1 rounded">
+                        <span className="flex items-center gap-1">
+                          Crédito ICMS Entrada ({resultado.compra.icmsCreditoAliquota.toFixed(2)}%):
+                          {resultado.compra.temRegraIcms ? (
+                            <Badge
+                              variant="outline"
+                              className="text-[9px] py-0 h-3.5 border-emerald-300 text-emerald-800"
+                            >
+                              Regra
+                            </Badge>
+                          ) : null}
+                        </span>
+                        <span className="font-mono font-semibold">
+                          {resultado.compra.icmsCreditoValor.toLocaleString('pt-BR', {
                             style: 'currency',
                             currency: 'BRL',
                           })}
