@@ -174,7 +174,8 @@ export function Simulate() {
   const [prazoVendaDias, setPrazoVendaDias] = useState<number>(60)
   const [precoUnitarioVenda, setPrecoUnitarioVenda] = useState<number>(45.0)
   const [moedaVenda, setMoedaVenda] = useState<'BRL' | 'USD'>('BRL')
-  const [ufOrigemVenda, setUfOrigemVenda] = useState<string>('SP')
+  // Regra de negócio: a UF Origem da venda é obrigatoriamente a UF Destino da compra
+  const ufOrigemVenda = ufDestinoCompra
   const [ufDestinoVenda, setUfDestinoVenda] = useState<string>('MT')
   const [enquadramentoCliente, setEnquadramentoCliente] =
     useState<EnquadramentoCliente>('produtor_rural')
@@ -1349,26 +1350,35 @@ export function Simulate() {
 
                     {/* Rota Fiscal: Origem e Destino */}
                     <div className="space-y-1">
-                      <Label className="text-xs font-semibold text-gray-800 flex items-center gap-1">
-                        <Compass className="w-3.5 h-3.5 text-[#1B5E20]" />
-                        UF Origem → Destino
+                      <Label className="text-xs font-semibold text-gray-800 flex items-center justify-between">
+                        <span className="flex items-center gap-1">
+                          <Compass className="w-3.5 h-3.5 text-[#1B5E20]" />
+                          UF Origem → Destino
+                        </span>
+                        <span className="text-[10px] text-[#1B5E20] font-mono">
+                          {ufOrigemVenda} → {ufDestinoVenda}
+                        </span>
                       </Label>
                       <div className="grid grid-cols-2 gap-1.5">
-                        <select
-                          value={ufOrigemVenda}
-                          onChange={(e) => setUfOrigemVenda(e.target.value)}
-                          className="h-8 text-xs rounded-md border border-emerald-200 bg-white px-2 font-medium"
-                        >
-                          {UFS_BRASIL.map((uf) => (
-                            <option key={uf} value={uf}>
-                              {uf}
-                            </option>
-                          ))}
-                        </select>
+                        <div className="relative">
+                          <input
+                            type="text"
+                            readOnly
+                            disabled
+                            value={ufOrigemVenda}
+                            aria-readonly="true"
+                            title="Preenchido automaticamente pela UF Destino da compra (bloqueado para edição)"
+                            className="w-full h-8 text-xs rounded-md border border-emerald-200 bg-emerald-50/70 text-emerald-950 px-2.5 font-bold cursor-not-allowed select-none opacity-90 shadow-inner"
+                          />
+                          <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-emerald-700 bg-emerald-100/80 px-1 rounded font-mono font-semibold pointer-events-none">
+                            Auto
+                          </span>
+                        </div>
                         <select
                           value={ufDestinoVenda}
                           onChange={(e) => setUfDestinoVenda(e.target.value)}
                           className="h-8 text-xs rounded-md border border-emerald-200 bg-white px-2 font-medium"
+                          title="UF Destino da venda ao cliente"
                         >
                           {UFS_BRASIL.map((uf) => (
                             <option key={uf} value={uf}>
@@ -1377,6 +1387,9 @@ export function Simulate() {
                           ))}
                         </select>
                       </div>
+                      <p className="text-[10px] text-[#5A6D5A] leading-tight">
+                        Origem vinculada à UF Destino da compra ({ufDestinoCompra}).
+                      </p>
                     </div>
 
                     {/* Enquadramento do Cliente */}
