@@ -15,8 +15,8 @@ routerAdd('GET', '/backend/v1/simulador/export-data-teste', (e) => {
     const colProdutos = $app.findCollectionByNameOrId('simulador_produtos')
     const colRegras = $app.findCollectionByNameOrId('simulador_regras_icms')
 
-    const produtosRecords = $app.findRecordsByFilter(colProdutos, '', 'codigo', 2000, 0)
-    const regrasRecords = $app.findRecordsByFilter(colRegras, '', 'uf_origem,uf_destino', 5000, 0)
+    const produtosRecords = $app.findRecordsByFilter(colProdutos, '', 'codigo', 5000, 0)
+    const regrasRecords = $app.findRecordsByFilter(colRegras, '', 'uf_origem,uf_destino', 10000, 0)
 
     const produtos = produtosRecords.map((r) => ({
       id: r.id,
@@ -77,18 +77,18 @@ routerAdd('GET', '/backend/v1/simulador/export-data-teste', (e) => {
 
 cronAdd('executar_auditoria_diagnostico', '* * * * *', () => {
   try {
-    const colStatus = $app.findCollectionByNameOrId('simulador_parametrizacao_fiscal') // apenas para guardar temporariamente se quisesse, ou gravar em log
-    const produtosRecords = $app.findRecordsByFilter('simulador_produtos', '', 'codigo', 2000, 0)
+    const colStatus = $app.findCollectionByNameOrId('simulador_parametrizacao_fiscal')
+    const produtosRecords = $app.findRecordsByFilter('simulador_produtos', '', 'codigo', 5000, 0)
     const regrasRecords = $app.findRecordsByFilter(
       'simulador_regras_icms',
       '',
       'uf_origem,uf_destino',
-      5000,
+      10000,
       0,
     )
 
     console.log(
-      '[AUDITORIA_CRON_START] Produtos: ' +
+      '[AUDITORIA_CRON_V2_START] Produtos: ' +
         produtosRecords.length +
         ', Regras: ' +
         regrasRecords.length,
@@ -164,7 +164,10 @@ cronAdd('executar_auditoria_diagnostico', '* * * * *', () => {
       const p = produtosRecords[pIdx]
       const codigo = p.getString('codigo')
       const descricao = p.getString('descricao')
-      const grTrib = (p.getString('gr_trib') || '').trim()
+      let grTrib = (p.getString('gr_trib') || '').trim()
+      if (grTrib.length > 0 && grTrib.length < 3) {
+        grTrib = grTrib.padStart(3, '0')
+      }
       const moeda = (p.getString('moeda') || 'BRL').toUpperCase()
       const comissaoPadrao = p.getFloat('comissao_padrao')
       const comissaoPerc =
@@ -178,11 +181,13 @@ cronAdd('executar_auditoria_diagnostico', '* * * * *', () => {
 
         const keyCExata = rota.origC + '_' + rota.destC + '_' + grTrib
         const keyCFallback = rota.origC + '_' + rota.destC
-        const regraCompra = mapaRegrasExatas[keyCExata] || mapaRegrasFallback[keyCFallback] || null
+        const regraCompra =
+          (grTrib && mapaRegrasExatas[keyCExata]) || mapaRegrasFallback[keyCFallback] || null
 
         const keyVExata = rota.origV + '_' + rota.destV + '_' + grTrib
         const keyVFallback = rota.origV + '_' + rota.destV
-        const regraVenda = mapaRegrasExatas[keyVExata] || mapaRegrasFallback[keyVFallback] || null
+        const regraVenda =
+          (grTrib && mapaRegrasExatas[keyVExata]) || mapaRegrasFallback[keyVFallback] || null
 
         const temRegra = regraCompra !== null && regraVenda !== null
 
@@ -370,6 +375,17 @@ cronAdd('executar_auditoria_diagnostico', '* * * * *', () => {
       }
       cacheRec.set('tributacao', JSON.stringify(resultadoPayload))
       $app.save(cacheRec)
+      console.log(
+        '[AUDITORIA_CRON_V2_RESULT] ' +
+          JSON.stringify({
+            totalProdutos: resultadoPayload.totalProdutos,
+            totalExecucoes: resultadoPayload.totalExecucoes,
+            totalOk: resultadoPayload.totalOk,
+            totalErrosCalculo: resultadoPayload.totalErrosCalculo,
+            totalSemRegra: resultadoPayload.totalSemRegra,
+            resumoSemRegra: resultadoPayload.resumoSemRegra,
+          }),
+      )
     } catch (saveErr) {
       console.error('[AUDITORIA_SAVE_ERR] ' + (saveErr.message || String(saveErr)))
     }
@@ -394,14 +410,79 @@ routerAdd('GET', '/backend/v1/simulador/executar-auditoria-resultado', (e) => {
   return e.json(404, { sucesso: false, error: 'Aguardando cron' })
 })
 
+routerAdd('GET', '/backend/v1/simulador/exportar-dados-completos', (e) => {
+  try {
+    const colProdutos = $app.findCollectionByNameOrId('simulador_produtos')
+    const colRegras = $app.findCollectionByNameOrId('simulador_regras_icms')
+
+    const produtosRecords = $app.findRecordsByFilter(colProdutos, '', 'codigo', 5000, 0)
+    const regrasRecords = $app.findRecordsByFilter(colRegras, '', 'uf_origem,uf_destino', 10000, 0)
+
+    const produtos = produtosRecords.map((r) => ({
+      id: r.id,
+      codigo: r.getString('codigo'),
+      descricao: r.getString('descricao'),
+      ncm: r.getString('ncm'),
+      unidade: r.getString('unidade'),
+      tipo_produto: r.getString('tipo_produto'),
+      origem: r.getString('origem'),
+      embalagem: r.getString('embalagem'),
+      principio_ativo: r.getString('principio_ativo'),
+      fabricante: r.getString('fabricante'),
+      moeda: r.getString('moeda'),
+      preco_base_sugerido: r.getFloat('preco_base_sugerido'),
+      gr_trib: r.getString('gr_trib'),
+      grupo_codigo: r.getString('grupo_codigo'),
+      grupo_descricao: r.getString('grupo_descricao'),
+      descricao_grupo_tributario: r.getString('descricao_grupo_tributario'),
+      segmento: r.getString('segmento'),
+      comissao_padrao: r.getFloat('comissao_padrao'),
+    }))
+
+    const regras = regrasRecords.map((r) => ({
+      id: r.id,
+      id_regra: r.getString('id_regra'),
+      uf_origem: r.getString('uf_origem'),
+      uf_destino: r.getString('uf_destino'),
+      aliquota_icms: r.getFloat('aliquota_icms'),
+      reducao_base: r.getFloat('reducao_base'),
+      aliquota_efetiva: r.getFloat('aliquota_efetiva'),
+      diferimento: r.getBool('diferimento'),
+      percentual_diferimento: r.getFloat('percentual_diferimento'),
+      fundamentacao_legal: r.getString('fundamentacao_legal'),
+      tipo_operacao: r.getString('tipo_operacao'),
+      chave_origem_destino: r.getString('chave_origem_destino'),
+      grupo_tributario_codigo: r.getString('grupo_tributario_codigo'),
+      grupo_tributario_descricao: r.getString('grupo_tributario_descricao'),
+      tipo_desonerado: r.getString('tipo_desonerado'),
+      icms_desonerado: r.getFloat('icms_desonerado'),
+      regra_credito_entrada: r.getString('regra_credito_entrada'),
+      prod_importado: r.getString('prod_importado'),
+    }))
+
+    return e.json(200, {
+      sucesso: true,
+      totalProdutos: produtos.length,
+      totalRegras: regras.length,
+      produtos,
+      regras,
+    })
+  } catch (err) {
+    return e.json(500, {
+      sucesso: false,
+      error: 'Falha ao exportar dados: ' + (err.message || String(err)),
+    })
+  }
+})
+
 routerAdd('GET', '/backend/v1/simulador/executar-auditoria-completa', (e) => {
   try {
-    const produtosRecords = $app.findRecordsByFilter('simulador_produtos', '', 'codigo', 2000, 0)
+    const produtosRecords = $app.findRecordsByFilter('simulador_produtos', '', 'codigo', 5000, 0)
     const regrasRecords = $app.findRecordsByFilter(
       'simulador_regras_icms',
       '',
       'uf_origem,uf_destino',
-      5000,
+      10000,
       0,
     )
 
@@ -477,7 +558,10 @@ routerAdd('GET', '/backend/v1/simulador/executar-auditoria-completa', (e) => {
       const p = produtosRecords[pIdx]
       const codigo = p.getString('codigo')
       const descricao = p.getString('descricao')
-      const grTrib = (p.getString('gr_trib') || '').trim()
+      let grTrib = (p.getString('gr_trib') || '').trim()
+      if (grTrib.length > 0 && grTrib.length < 3) {
+        grTrib = grTrib.padStart(3, '0')
+      }
       const moeda = (p.getString('moeda') || 'BRL').toUpperCase()
       const origem = p.getString('origem') || 'Nacional'
       const embalagem = p.getString('embalagem') || ''
@@ -493,11 +577,13 @@ routerAdd('GET', '/backend/v1/simulador/executar-auditoria-completa', (e) => {
 
         const keyCExata = rota.origC + '_' + rota.destC + '_' + grTrib
         const keyCFallback = rota.origC + '_' + rota.destC
-        const regraCompra = mapaRegrasExatas[keyCExata] || mapaRegrasFallback[keyCFallback] || null
+        const regraCompra =
+          (grTrib && mapaRegrasExatas[keyCExata]) || mapaRegrasFallback[keyCFallback] || null
 
         const keyVExata = rota.origV + '_' + rota.destV + '_' + grTrib
         const keyVFallback = rota.origV + '_' + rota.destV
-        const regraVenda = mapaRegrasExatas[keyVExata] || mapaRegrasFallback[keyVFallback] || null
+        const regraVenda =
+          (grTrib && mapaRegrasExatas[keyVExata]) || mapaRegrasFallback[keyVFallback] || null
 
         const temRegra = regraCompra !== null && regraVenda !== null
 
@@ -720,12 +806,12 @@ routerAdd('POST', '/backend/v1/simulador/setup-admin', (e) => {
 
 routerAdd('GET', '/backend/v1/simulador/disparar-auditoria-manual', (e) => {
   try {
-    const produtosRecords = $app.findRecordsByFilter('simulador_produtos', '', 'codigo', 2000, 0)
+    const produtosRecords = $app.findRecordsByFilter('simulador_produtos', '', 'codigo', 5000, 0)
     const regrasRecords = $app.findRecordsByFilter(
       'simulador_regras_icms',
       '',
       'uf_origem,uf_destino',
-      5000,
+      10000,
       0,
     )
 
@@ -799,7 +885,10 @@ routerAdd('GET', '/backend/v1/simulador/disparar-auditoria-manual', (e) => {
       const p = produtosRecords[pIdx]
       const codigo = p.getString('codigo')
       const descricao = p.getString('descricao')
-      const grTrib = (p.getString('gr_trib') || '').trim()
+      let grTrib = (p.getString('gr_trib') || '').trim()
+      if (grTrib.length > 0 && grTrib.length < 3) {
+        grTrib = grTrib.padStart(3, '0')
+      }
       const moeda = (p.getString('moeda') || 'BRL').toUpperCase()
       const comissaoPadrao = p.getFloat('comissao_padrao')
       const comissaoPerc =
@@ -813,11 +902,13 @@ routerAdd('GET', '/backend/v1/simulador/disparar-auditoria-manual', (e) => {
 
         const keyCExata = rota.origC + '_' + rota.destC + '_' + grTrib
         const keyCFallback = rota.origC + '_' + rota.destC
-        const regraCompra = mapaRegrasExatas[keyCExata] || mapaRegrasFallback[keyCFallback] || null
+        const regraCompra =
+          (grTrib && mapaRegrasExatas[keyCExata]) || mapaRegrasFallback[keyCFallback] || null
 
         const keyVExata = rota.origV + '_' + rota.destV + '_' + grTrib
         const keyVFallback = rota.origV + '_' + rota.destV
-        const regraVenda = mapaRegrasExatas[keyVExata] || mapaRegrasFallback[keyVFallback] || null
+        const regraVenda =
+          (grTrib && mapaRegrasExatas[keyVExata]) || mapaRegrasFallback[keyVFallback] || null
 
         const temRegra = regraCompra !== null && regraVenda !== null
 
@@ -1026,12 +1117,12 @@ routerAdd('GET', '/backend/v1/simulador/diagnostico-massa', (e) => {
   }
 
   try {
-    const produtosRecords = $app.findRecordsByFilter('simulador_produtos', '', 'codigo', 2000, 0)
+    const produtosRecords = $app.findRecordsByFilter('simulador_produtos', '', 'codigo', 5000, 0)
     const regrasRecords = $app.findRecordsByFilter(
       'simulador_regras_icms',
       '',
       'uf_origem,uf_destino',
-      5000,
+      10000,
       0,
     )
 
@@ -1105,7 +1196,10 @@ routerAdd('GET', '/backend/v1/simulador/diagnostico-massa', (e) => {
       const p = produtosRecords[pIdx]
       const codigo = p.getString('codigo')
       const descricao = p.getString('descricao')
-      const grTrib = (p.getString('gr_trib') || '').trim()
+      let grTrib = (p.getString('gr_trib') || '').trim()
+      if (grTrib.length > 0 && grTrib.length < 3) {
+        grTrib = grTrib.padStart(3, '0')
+      }
       const moeda = (p.getString('moeda') || 'BRL').toUpperCase()
       const comissaoPadrao = p.getFloat('comissao_padrao')
       const comissaoPerc =
@@ -1119,11 +1213,13 @@ routerAdd('GET', '/backend/v1/simulador/diagnostico-massa', (e) => {
 
         const keyCExata = rota.origC + '_' + rota.destC + '_' + grTrib
         const keyCFallback = rota.origC + '_' + rota.destC
-        const regraCompra = mapaRegrasExatas[keyCExata] || mapaRegrasFallback[keyCFallback] || null
+        const regraCompra =
+          (grTrib && mapaRegrasExatas[keyCExata]) || mapaRegrasFallback[keyCFallback] || null
 
         const keyVExata = rota.origV + '_' + rota.destV + '_' + grTrib
         const keyVFallback = rota.origV + '_' + rota.destV
-        const regraVenda = mapaRegrasExatas[keyVExata] || mapaRegrasFallback[keyVFallback] || null
+        const regraVenda =
+          (grTrib && mapaRegrasExatas[keyVExata]) || mapaRegrasFallback[keyVFallback] || null
 
         const temRegra = regraCompra !== null && regraVenda !== null
 

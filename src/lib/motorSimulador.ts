@@ -563,7 +563,10 @@ export function executarCalculoSimulador(input: SimuladorInput): SimuladorResult
   const ncm = produto.ncm || '3808.93.29'
   const unid = input.unidade || produto.unidade || 'L'
   const emb = input.embalagem || produto.embalagem || 'Padrão'
-  const grTrib = (produto.gr_trib || '').trim()
+  let grTrib = (produto.gr_trib || '').trim()
+  if (grTrib.length > 0 && grTrib.length < 3) {
+    grTrib = grTrib.padStart(3, '0')
+  }
 
   // 1. Quantidade e Volume da Simulação (Lote)
   const qtdInformada = Math.max(0, Number(input.quantidade) || 0)

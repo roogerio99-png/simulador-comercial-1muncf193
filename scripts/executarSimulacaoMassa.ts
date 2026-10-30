@@ -65,6 +65,108 @@ export async function carregarDadosDoBackend(baseUrl: string) {
   }
 }
 
+export async function carregarDadosComFallbackPocketBase(baseUrl?: string): Promise<{
+  produtos: ProdutoBaseSimulador[]
+  regras: RegraIcmsSimulador[]
+}> {
+  const url =
+    baseUrl ||
+    (typeof process !== 'undefined' ? process.env.VITE_POCKETBASE_URL : '') ||
+    'http://127.0.0.1:8090'
+
+  // Tenta o endpoint export-data-teste
+  try {
+    const epUrl = `${url.replace(/\/$/, '')}/backend/v1/simulador/export-data-teste`
+    const res = await fetch(epUrl)
+    if (res.ok) {
+      const json = await res.json()
+      if (json.produtos && json.regras) {
+        return json as { produtos: ProdutoBaseSimulador[]; regras: RegraIcmsSimulador[] }
+      }
+    }
+  } catch (_) {}
+
+  // Tenta endpoint exportar-dados-completos
+  try {
+    const epUrl = `${url.replace(/\/$/, '')}/backend/v1/simulador/exportar-dados-completos`
+    const res = await fetch(epUrl)
+    if (res.ok) {
+      const json = await res.json()
+      if (json.produtos && json.regras) {
+        return json as { produtos: ProdutoBaseSimulador[]; regras: RegraIcmsSimulador[] }
+      }
+    }
+  } catch (_) {}
+
+  throw new Error(`Não foi possível carregar dados de produtos e regras em ${url}`)
+}
+
+export async function executarAuditoriaCompletaMassa(
+  produtos: ProdutoBaseSimulador[],
+  regras: RegraIcmsSimulador[],
+) {
+  const totalProdutos = produtos.length
+  let totalExecucoes = 0
+  let totalOk = 0
+  let totalErrosCalculo = 0
+  let totalSemRegra = 0
+
+  const erros: ResultadoAuditoriaItem[] = []
+  const resumoSemRegra: Record<string, number> = {}
+  const contagemGrTrib: Record<string, number> = {}
+  const amostraCasosBorda: Record<string, ResultadoAuditoriaItem[]> = {
+    USD_sem_ptax_manual: [],
+    embalagem_vazia: [],
+    unidade_L_fertilizante_solido: [],
+  }
+
+  for (const produto of produtos) {
+    let gr = (produto.gr_trib || '').trim()
+    if (gr.length > 0 && gr.length < 3) gr = gr.padStart(3, '0')
+    contagemGrTrib[gr || 'SEM_GR'] = (contagemGrTrib[gr || 'SEM_GR'] || 0) + 1
+
+    for (const rota of ROTAS_TESTE) {
+      totalExecucoes++
+      const resultado = testarProdutoRota(produto, rota, regras)
+
+      if (resultado.status === 'OK') {
+        totalOk++
+      } else if (resultado.status === 'ERRO_CALCULO') {
+        totalErrosCalculo++
+        erros.push(resultado)
+      } else if (resultado.status === 'SEM_REGRA') {
+        totalSemRegra++
+        const ch = `${rota.nome} | GrTrib ${gr || 'SEM_GR'} (${resultado.motivoErro || 'Sem regra'})`
+        resumoSemRegra[ch] = (resumoSemRegra[ch] || 0) + 1
+      }
+
+      // Casos de borda solicitados:
+      if (produto.codigo === '006802') {
+        amostraCasosBorda['USD_sem_ptax_manual'].push(resultado)
+      }
+      if (produto.codigo === '007216' || produto.codigo === '007221') {
+        amostraCasosBorda['embalagem_vazia'].push(resultado)
+      }
+      if (produto.codigo === '007100') {
+        amostraCasosBorda['unidade_L_fertilizante_solido'].push(resultado)
+      }
+    }
+  }
+
+  return {
+    totalProdutos,
+    totalRotas: ROTAS_TESTE.length,
+    totalExecucoes,
+    totalOk,
+    totalErrosCalculo,
+    totalSemRegra,
+    erros,
+    resumoSemRegra,
+    contagemGrTrib,
+    amostraCasosBorda,
+  }
+}
+
 export function encontrarRegra(
   regras: RegraIcmsSimulador[],
   ufOrigem: string,
@@ -73,15 +175,19 @@ export function encontrarRegra(
 ): { regra: RegraIcmsSimulador | null; tipoMatch: 'exato' | 'fallback' | 'nenhum' } {
   const orig = (ufOrigem || '').trim().toUpperCase()
   const dest = (ufDestino || '').trim().toUpperCase()
-  const gr = (grTrib || '').trim()
+  let gr = (grTrib || '').trim()
+  if (gr.length > 0 && gr.length < 3) {
+    gr = gr.padStart(3, '0')
+  }
 
   if (gr) {
-    const exata = regras.find(
-      (r) =>
-        r.uf_origem?.toUpperCase() === orig &&
-        r.uf_destino?.toUpperCase() === dest &&
-        (r.grupo_tributario_codigo || '').trim() === gr,
-    )
+    const exata = regras.find((r) => {
+      let rGr = (r.grupo_tributario_codigo || '').trim()
+      if (rGr.length > 0 && rGr.length < 3) rGr = rGr.padStart(3, '0')
+      return (
+        r.uf_origem?.toUpperCase() === orig && r.uf_destino?.toUpperCase() === dest && rGr === gr
+      )
+    })
     if (exata) return { regra: exata, tipoMatch: 'exato' }
   }
 
