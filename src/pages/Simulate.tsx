@@ -128,8 +128,6 @@ const PRODUTOS_SEED_DEMO: ProdutoBaseSimulador[] = [
   },
 ]
 
-
-
 export function Simulate() {
   const { toast } = useToast()
 
@@ -2227,22 +2225,32 @@ export function Simulate() {
                   {mostrarMemoriaCalculo && (
                     <CardContent className="p-4 bg-[#FCFDFB] space-y-3">
                       <ol className="list-decimal list-inside space-y-2 text-xs font-mono text-gray-700">
-                        {resultado.memoriaCalculo.map((item, idx) => (
-                          <li
-                            key={idx}
-                            className={`p-2.5 rounded border ${
-                              item.includes('--- 1. OPERAÇÃO DE COMPRA')
-                                ? 'bg-sky-50 border-sky-300 font-bold text-sky-950'
-                                : item.includes('--- 2. OPERAÇÃO DE VENDA')
-                                  ? 'bg-emerald-50 border-emerald-300 font-bold text-emerald-950'
-                                  : item.includes('--- 3. RESULTADO CONSOLIDADO')
-                                    ? 'bg-amber-50 border-amber-300 font-bold text-amber-950'
-                                    : 'bg-white border-[#DCE5DC]'
-                            }`}
-                          >
-                            <span>{item}</span>
-                          </li>
-                        ))}
+                        {resultado.memoriaCalculo.map((item, idx) => {
+                          const isBlocoCompra =
+                            item.includes('[BLOCO COMPRA]') || item.includes('OPERAÇÃO DE COMPRA')
+                          const isBlocoVenda =
+                            item.includes('[BLOCO VENDA]') || item.includes('OPERAÇÃO DE VENDA')
+                          const isBlocoResultado =
+                            item.includes('[BLOCO RESULTADO') ||
+                            item.includes('RESULTADO CONSOLIDADO')
+
+                          return (
+                            <li
+                              key={idx}
+                              className={`p-2.5 rounded border ${
+                                isBlocoCompra
+                                  ? 'bg-sky-50 border-sky-300 font-bold text-sky-950'
+                                  : isBlocoVenda
+                                    ? 'bg-emerald-50 border-emerald-300 font-bold text-emerald-950'
+                                    : isBlocoResultado
+                                      ? 'bg-amber-50 border-amber-300 font-bold text-amber-950'
+                                      : 'bg-white border-[#DCE5DC]'
+                              }`}
+                            >
+                              <span>{item}</span>
+                            </li>
+                          )
+                        })}
                       </ol>
 
                       {resultado.alertas.length > 0 && (

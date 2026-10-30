@@ -12,11 +12,6 @@
  * - Suporta transação por chunk, upsert idempotente direto no banco SQLite, reportando criados, atualizados, ignorados e erros item a item.
  */
 
-
-
-
-
-
 routerAdd('POST', '/backend/v1/simulador/inspecionar-referencia', (e) => {
   try {
     const files = e.findUploadedFiles('arquivo')
@@ -30,8 +25,6 @@ routerAdd('POST', '/backend/v1/simulador/inspecionar-referencia', (e) => {
     return e.json(500, { error: String(err) })
   }
 })
-
-
 
 routerAdd('POST', '/backend/v1/simulador/importar-lote', (e) => {
   // 1. Validação de autenticação

@@ -285,7 +285,6 @@ export async function dumpReferenceWorkbook(): Promise<any> {
  * Dump estático formatado em linhas da aba Simulador e REGRAS
  */
 
-
 export async function getReferenceSheetRows(): Promise<string[]> {
   const dump = await dumpReferenceWorkbook()
   const lines: string[] = []

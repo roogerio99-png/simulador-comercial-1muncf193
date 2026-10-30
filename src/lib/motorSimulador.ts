@@ -1,7 +1,7 @@
 /**
  * src/lib/motorSimulador.ts
  *
- * Motor de Cálculo Comercial Canônico do AgroSimulador (Aba "Simulador" do Excel - 53 linhas).
+ * Motor de Cálculo Comercial Canônico do AgroSimulador (Aba "Simulador" do Excel - 73 linhas + Aba "REGRAS" - 2 linhas).
  *
  * Suporta a segregação completa entre:
  * 1. OPERAÇÃO DE COMPRA (Aquisição):
@@ -1204,6 +1204,8 @@ export function executarCalculoSimulador(input: SimuladorInput): SimuladorResult
   }
 
   // 5. CÁLCULO DE MARKUP E PREÇO SUGERIDO (Venda)
+  // Conforme aba REGRAS da planilha: Preço = Custo / (1 - Cargas - Margem)
+  // Multiplicador de markup divisor: 1 / (1 - Cargas - Margem)
   const margemAlvoPerc =
     vendaIn.margemAlvoPerc !== undefined
       ? Number(vendaIn.margemAlvoPerc)
@@ -1211,11 +1213,11 @@ export function executarCalculoSimulador(input: SimuladorInput): SimuladorResult
   const somaCargasPercentuais =
     (cargaTributariaEfetivaPerc + comissaoPerc + taxaEfetivaVendaPerc) / 100
   const custoBaseFixoParaMarkup = custoAquisicaoBase
-  const divisorBreakEven = Math.max(0.01, 1 - somaCargasPercentuais)
+  const divisorBreakEven = Math.max(0.001, 1 - somaCargasPercentuais)
   const precoMinimoBreakEven = custoBaseFixoParaMarkup / divisorBreakEven
-  const divisorComMargem = Math.max(0.01, 1 - somaCargasPercentuais - margemAlvoPerc / 100)
+  const divisorComMargem = Math.max(0.001, 1 - somaCargasPercentuais - margemAlvoPerc / 100)
   const precoVendaSugerido =
-    margemAlvoPerc > 0 && divisorComMargem > 0
+    divisorComMargem > 0
       ? custoBaseFixoParaMarkup / divisorComMargem
       : precoMinimoBreakEven * (1 + margemAlvoPerc / 100)
   const markupMultiplicador =
@@ -1345,51 +1347,54 @@ export function executarCalculoSimulador(input: SimuladorInput): SimuladorResult
     },
   ]
 
-  // 7. MEMÓRIA DE CÁLCULO SEPARADA POR BLOCOS
+  // 7. MEMÓRIA DE CÁLCULO SEPARADA POR BLOCOS (Ordem e rótulos da aba Simulador da planilha)
   memoriaCalculo.push(
-    `--- 1. OPERAÇÃO DE COMPRA (${dataCompraIso} | Vencimento ${dataVencimentoCompraIso} em ${prazoCompraDias} dias | Rota: ${ufOrigemCompra} → ${ufDestinoCompra}) ---`,
+    `[BLOCO COMPRA] Operação de Aquisição (${dataCompraIso} | Vencimento ${dataVencimentoCompraIso} em ${prazoCompraDias} dias | Rota: ${ufOrigemCompra} → ${ufDestinoCompra})`,
   )
   memoriaCalculo.push(
-    `Mercadoria: ${volumeTotal.toLocaleString('pt-BR')} ${unid} × ${moedaCompra === 'USD' ? `US$ ${precoUnitarioCompra.toFixed(2)} (PTAX R$ ${ptaxCompra.toFixed(4)}) = ` : ''}R$ ${precoUnitarioCompraReais.toFixed(2)} = R$ ${valorMercadoriaCompraReais.toFixed(2)}`,
+    `Custo de Aquisição Mercadoria: ${volumeTotal.toLocaleString('pt-BR')} ${unid} × ${moedaCompra === 'USD' ? `US$ ${precoUnitarioCompra.toFixed(2)} (PTAX R$ ${ptaxCompra.toFixed(4)}) = ` : ''}R$ ${precoUnitarioCompraReais.toFixed(2)} = R$ ${valorMercadoriaCompraReais.toFixed(2)}`,
   )
   memoriaCalculo.push(
-    `Despesas de Aquisição: Frete (${modalidadeFreteCompra}) R$ ${freteCompraReais.toFixed(2)} + Seguro R$ ${seguroCompra.toFixed(2)} + Outros R$ ${outrasDespesasCompra.toFixed(2)} = R$ ${totalDespesasCompra.toFixed(2)}`,
+    `Despesas de Aquisição: Frete (${modalidadeFreteCompra}) R$ ${freteCompraReais.toFixed(2)} + Seguro R$ ${seguroCompra.toFixed(2)} + Outras Despesas R$ ${outrasDespesasCompra.toFixed(2)} = R$ ${totalDespesasCompra.toFixed(2)}`,
   )
   memoriaCalculo.push(
-    `Crédito de ICMS Entrada (${ufOrigemCompra} → ${ufDestinoCompra}): Alíquota Regra Fiscal/Aplicada ${icmsCreditoAliq.toFixed(2)}% sobre Base R$ ${baseCreditoIcms.toFixed(2)} = Crédito ICMS R$ ${icmsCreditoValor.toFixed(2)} (Total Créditos Fiscais: R$ ${totalCreditosTributarios.toFixed(2)})`,
+    `Crédito ICMS Entrada (${ufOrigemCompra} → ${ufDestinoCompra}): Alíquota Regra Fiscal ${icmsCreditoAliq.toFixed(2)}% sobre Base R$ ${baseCreditoIcms.toFixed(2)} = Crédito ICMS R$ ${icmsCreditoValor.toFixed(2)} (Total Créditos Tributários: R$ ${totalCreditosTributarios.toFixed(2)})`,
   )
   memoriaCalculo.push(
-    `Custo Mercadoria: R$ ${custoAquisicaoMercadoria.toFixed(2)} (Líquido s/ impostos: R$ ${custoAquisicaoLiquidoSemTributos.toFixed(2)}) | Juros da Compra: taxa ${taxaJurosCompraMensal.toFixed(2)}% a.m. (efetiva ${taxaEfetivaCompraPerc.toFixed(2)}% em ${prazoCompraDias}d) = R$ ${jurosCompraValor.toFixed(2)} | Custo Total c/ Juros: R$ ${custoTotalCompraComJuros.toFixed(2)} (R$ ${custoUnitarioTotalCompra.toFixed(2)}/${unid})`,
-  )
-
-  memoriaCalculo.push(
-    `--- 2. OPERAÇÃO DE VENDA (${dataVendaIso} | Vencimento ${dataVencimentoVendaIso} em ${prazoVendaDias} dias) ---`,
-  )
-  memoriaCalculo.push(
-    `Preço de Venda: R$ ${precoUnitarioVendaReais.toFixed(2)}/${unid} | Faturamento Bruto: R$ ${receitaBrutaVenda.toFixed(2)} | Comissão (${comissaoPerc}%): R$ ${comissaoValor.toFixed(2)}`,
-  )
-  memoriaCalculo.push(
-    `ICMS (${ufOrigemVenda} → ${ufDestinoVenda}): Base Bruta R$ ${baseCalculoBrutaIcmsVenda.toFixed(2)} | Redução ${redBasePerc}% → Base Efetiva R$ ${baseCalculoEfetivaIcms.toFixed(2)} | Débito R$ ${debitoIcms.toFixed(2)} | Diferimento R$ ${valorDiferimento.toFixed(2)} | A Recolher R$ ${icmsEfetivoRecolher.toFixed(2)}`,
-  )
-  memoriaCalculo.push(
-    `PIS/COFINS (Tema 69 STF): Base R$ ${basePisCofinsComExclusaoStf.toFixed(2)} (Faturamento R$ ${receitaBrutaVenda.toFixed(2)} - ICMS R$ ${icmsEfetivoRecolher.toFixed(2)}) | PIS ${aliqPisPadrao.toFixed(3)}% (R$ ${valorPis.toFixed(2)}) + COFINS ${aliqCofinsPadrao.toFixed(3)}% (R$ ${valorCofins.toFixed(2)})`,
-  )
-  memoriaCalculo.push(
-    `IBS/CBS (LC 214/2025 c/ red. 60%): Base R$ ${baseCalculoIbsCbs.toFixed(2)} | IBS ${aliqIbsNominal}% (R$ ${valorIbs.toFixed(2)}) + CBS ${aliqCbsNominal}% (R$ ${valorCbs.toFixed(2)}) | Total Tributos Venda: R$ ${totalTributosVenda.toFixed(2)} (${cargaTributariaEfetivaPerc.toFixed(2)}%)`,
-  )
-  memoriaCalculo.push(
-    `Juros Financiamento Concedido ao Cliente: taxa ${taxaJurosVendaMensal.toFixed(2)}% a.m. (efetiva ${taxaEfetivaVendaPerc.toFixed(2)}% em ${prazoVendaDias}d) = R$ ${jurosVendaValor.toFixed(2)}`,
+    `Custo Total de Compra: Mercadoria R$ ${custoAquisicaoMercadoria.toFixed(2)} | Juros Financiamento Compra (${taxaJurosCompraMensal.toFixed(2)}% a.m. / pró-rata ${taxaEfetivaCompraPerc.toFixed(2)}% em ${prazoCompraDias}d) = R$ ${jurosCompraValor.toFixed(2)} | Custo Total com Juros: R$ ${custoTotalCompraComJuros.toFixed(2)} (R$ ${custoUnitarioTotalCompra.toFixed(2)}/${unid})`,
   )
 
-  memoriaCalculo.push(`--- 3. RESULTADO CONSOLIDADO DA OPERAÇÃO ---`)
   memoriaCalculo.push(
-    `Receita Líquida R$ ${receitaLiquidaVenda.toFixed(2)} - Custo de Aquisição R$ ${custoAquisicaoBase.toFixed(2)} - Despesas Venda R$ ${despesasOperacionaisVenda.toFixed(2)} = Margem Operacional R$ ${margemContribuicaoOperacional.toFixed(2)}`,
+    `[BLOCO VENDA] Operação de Revenda Comercial (${dataVendaIso} | Vencimento ${dataVencimentoVendaIso} em ${prazoVendaDias} dias | Rota: ${ufOrigemVenda} → ${ufDestinoVenda})`,
   )
   memoriaCalculo.push(
-    `Resultado Financeiro: Juros Venda (+) R$ ${jurosVendaValor.toFixed(2)} - Juros Compra (-) R$ ${jurosCompraValor.toFixed(2)} = R$ ${resultadoFinanceiroLiquido.toFixed(2)}`,
+    `Receita Bruta da Venda: R$ ${precoUnitarioVendaReais.toFixed(2)}/${unid} | Faturamento Total: R$ ${receitaBrutaVenda.toFixed(2)} | Frete Venda (${modalidadeFreteVenda}): R$ ${freteVendaReais.toFixed(2)} | Seguro/Outros: R$ ${(seguroVenda + outrasDespesasVenda).toFixed(2)} | Comissão (${comissaoPerc}%): R$ ${comissaoValor.toFixed(2)}`,
   )
   memoriaCalculo.push(
-    `RESULTADO FINAL DA OPERAÇÃO: R$ ${resultadoFinalOperacao.toFixed(2)} (${margemSobreReceitaBrutaPerc.toFixed(2)}% da venda | ${margemSobreCustoInvestidoPerc.toFixed(2)}% ROI sobre compra)`,
+    `ICMS Saída (${ufOrigemVenda} → ${ufDestinoVenda}): Base Bruta R$ ${baseCalculoBrutaIcmsVenda.toFixed(2)} | Redução ${redBasePerc}% → Base Efetiva R$ ${baseCalculoEfetivaIcms.toFixed(2)} | Alíquota ${aliqNominal}% | Débito R$ ${debitoIcms.toFixed(2)} | Diferimento R$ ${valorDiferimento.toFixed(2)} | ICMS Efetivo a Recolher: R$ ${icmsEfetivoRecolher.toFixed(2)}`,
+  )
+  memoriaCalculo.push(
+    `PIS/COFINS (Tema 69 STF - Exclusão ICMS): Base R$ ${basePisCofinsComExclusaoStf.toFixed(2)} | PIS ${aliqPisPadrao.toFixed(3)}% (R$ ${valorPis.toFixed(2)}) + COFINS ${aliqCofinsPadrao.toFixed(3)}% (R$ ${valorCofins.toFixed(2)})`,
+  )
+  memoriaCalculo.push(
+    `IBS/CBS (Transição 2026 LC 214/2025 c/ Redução 60%): Base R$ ${baseCalculoIbsCbs.toFixed(2)} | IBS ${aliqIbsNominal}% reduzido 60% (efetivo ${aliqIbsEfetiva.toFixed(3)}% = R$ ${valorIbs.toFixed(2)}) + CBS ${aliqCbsNominal}% reduzido 60% (efetivo ${aliqCbsEfetiva.toFixed(3)}% = R$ ${valorCbs.toFixed(2)}) | Carga Tributária Total da Venda: R$ ${totalTributosVenda.toFixed(2)} (${cargaTributariaEfetivaPerc.toFixed(2)}%)`,
+  )
+  memoriaCalculo.push(
+    `Juros Financiamento Concedido ao Cliente: Taxa ${taxaJurosVendaMensal.toFixed(2)}% a.m. (efetiva ${taxaEfetivaVendaPerc.toFixed(2)}% em ${prazoVendaDias}d) = R$ ${jurosVendaValor.toFixed(2)}`,
+  )
+
+  memoriaCalculo.push(`[BLOCO RESULTADO CONSOLIDADO] DRE e Indicadores da Operação`)
+  memoriaCalculo.push(
+    `Faturamento Bruto R$ ${receitaBrutaVenda.toFixed(2)} (-) Deduções Tributárias R$ ${totalTributosVenda.toFixed(2)} (=) Receita Líquida R$ ${receitaLiquidaVenda.toFixed(2)}`,
+  )
+  memoriaCalculo.push(
+    `Receita Líquida R$ ${receitaLiquidaVenda.toFixed(2)} (-) Custo Aquisição Mercadoria R$ ${custoAquisicaoBase.toFixed(2)} (-) Despesas Operacionais Venda R$ ${despesasOperacionaisVenda.toFixed(2)} (=) Margem Operacional R$ ${margemContribuicaoOperacional.toFixed(2)}`,
+  )
+  memoriaCalculo.push(
+    `Resultado Financeiro: Juros Venda (+) R$ ${jurosVendaValor.toFixed(2)} (-) Juros Compra (-) R$ ${jurosCompraValor.toFixed(2)} (=) Saldo Financeiro R$ ${resultadoFinanceiroLiquido.toFixed(2)}`,
+  )
+  memoriaCalculo.push(
+    `RESULTADO FINAL DA OPERAÇÃO: R$ ${resultadoFinalOperacao.toFixed(2)} (${margemSobreReceitaBrutaPerc.toFixed(2)}% da venda | ${margemSobreCustoInvestidoPerc.toFixed(2)}% ROI sobre compra) | Break-Even: R$ ${precoMinimoBreakEven.toFixed(2)} | Markup Multiplicador: ${markupMultiplicador.toFixed(3)}x | Preço Sugerido (Margem ${margemAlvoPerc}%): R$ ${precoVendaSugerido.toFixed(2)} (R$ ${precoVendaSugeridoUnitario.toFixed(2)}/${unid})`,
   )
 
   return {
