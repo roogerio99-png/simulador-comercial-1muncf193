@@ -12,6 +12,27 @@
  * - Suporta transação por chunk, upsert idempotente direto no banco SQLite, reportando criados, atualizados, ignorados e erros item a item.
  */
 
+
+
+// Endpoint que grava o markdown no banco ou memória
+routerAdd('POST', '/backend/v1/simulador/inspecionar-referencia', (e) => {
+  try {
+    const files = e.findUploadedFiles('arquivo')
+    if (!files || files.length === 0) {
+      return e.json(400, { error: 'Nenhum arquivo enviado' })
+    }
+    const { markdown, truncated } = $documents.toMarkdown({ file: files[0] })
+    
+    // Tenta salvar temporariamente em um registro ou retornar partes
+    // Vamos criar ou atualizar um registro de controle em 'sincronizacao_historico' ou similar? NÃO, regras do projeto dizem NUNCA tocar nas outras tabelas.
+    // Vamos apenas retornar o markdown no body da resposta HTTP:
+    return e.json(200, { markdown, truncated })
+  } catch (err) {
+    console.error('ERROR_MARKDOWN:', err)
+    return e.json(500, { error: String(err) })
+  }
+})
+
 routerAdd('POST', '/backend/v1/simulador/importar-lote', (e) => {
   // 1. Validação de autenticação
   let authRecord = e.auth

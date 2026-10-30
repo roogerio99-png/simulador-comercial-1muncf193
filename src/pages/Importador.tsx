@@ -190,6 +190,7 @@ export function cleanNumber(raw: string): number {
 export function Importador() {
   const { isAdmin } = useAuth()
   const { toast } = useToast()
+  const [dumpLines, setDumpLines] = useState<string>('')
 
   const [activeZone, setActiveZone] = useState<ZoneConfig>(DROP_ZONES[0])
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
@@ -728,6 +729,42 @@ export function Importador() {
         </div>
 
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={async () => {
+              try {
+                // Obter asset
+                const xlsxUrl = (await import('@/assets/simuladordeoperacoesv3completo-eef50.xlsx?url')).default
+                const resp = await fetch(xlsxUrl)
+                const blob = await resp.blob()
+                const formData = new FormData()
+                formData.append('arquivo', blob, 'simulador.xlsx')
+                const pbUrl = import.meta.env.VITE_POCKETBASE_URL || ''
+                const res = await fetch(`${pbUrl}/backend/v1/simulador/inspecionar-referencia`, {
+                  method: 'POST',
+                  body: formData,
+                })
+                const json = await res.json()
+                if (json.markdown) {
+                  setDumpLines(json.markdown)
+                } else {
+                  // Fallback para getReferenceSheetRows
+                  const { getReferenceSheetRows } = await import('@/lib/importer/csvParser')
+                  const lines = await getReferenceSheetRows()
+                  setDumpLines(lines.join('\n'))
+                }
+              } catch (e) {
+                console.error(e)
+                const { getReferenceSheetRows } = await import('@/lib/importer/csvParser')
+                const lines = await getReferenceSheetRows()
+                setDumpLines(lines.join('\n'))
+              }
+            }}
+            className="h-8 text-xs border-emerald-300 text-[#1B5E20]"
+          >
+            Ver Modelo da Planilha
+          </Button>
           <Badge
             variant="outline"
             className="text-xs bg-emerald-50 text-emerald-800 border-emerald-300 px-3 py-1 flex items-center gap-1.5"
@@ -737,6 +774,23 @@ export function Importador() {
           </Badge>
         </div>
       </div>
+
+      {dumpLines && (
+        <Card className="p-4 bg-slate-950 text-emerald-400 font-mono text-[11px] max-h-96 overflow-auto border border-emerald-500/30">
+          <div className="flex justify-between items-center mb-2 pb-2 border-b border-emerald-800">
+            <span className="font-bold">DUMP DO MODELO CANÔNICO DA PLANILHA (Fórmulas e Rótulos)</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setDumpLines('')}
+              className="h-6 text-xs text-rose-400 hover:text-rose-300"
+            >
+              Fechar
+            </Button>
+          </div>
+          <pre className="whitespace-pre-wrap leading-tight">{dumpLines}</pre>
+        </Card>
+      )}
 
       {/* 2 ZONAS DE DESTINO DO SIMULADOR */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

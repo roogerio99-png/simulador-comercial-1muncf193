@@ -13,6 +13,7 @@ export interface ParsedTable {
   sheetNames?: string[]
   headers: string[]
   rows: Record<string, string>[]
+  rawSheetDump?: Record<string, any>
   /** Índice da linha no arquivo original (1-based) para cada linha do parsed */
   rowIndices?: number[]
 }
@@ -246,6 +247,72 @@ function findHeaderRowIndex(grid: (string | number | undefined)[][]): number {
  * Lê arquivo selecionado pelo usuário (.csv, .txt, .tsv, .xlsx, .xls)
  * com suporte nativo a XLSX via biblioteca SheetJS instalada ou carregada globalmente.
  */
+import xlsxAssetUrl from '@/assets/simuladordeoperacoesv3completo-eef50.xlsx?url'
+
+// Helper exportado para inspeção completa da planilha
+export function parseWorkbookBuffer(buf: ArrayBuffer): Record<string, any> {
+  const wb = XLSX.read(new Uint8Array(buf), {
+    type: 'array',
+    cellDates: true,
+    raw: false,
+    cellFormula: true,
+  })
+  const res: Record<string, any> = { sheetNames: wb.SheetNames }
+  wb.SheetNames.forEach((name) => {
+    const s = wb.Sheets[name]
+    const cells: Record<string, { v?: any; f?: any; t?: any; w?: any }> = {}
+    if (s) {
+      Object.keys(s).forEach((key) => {
+        if (!key.startsWith('!')) {
+          cells[key] = { v: s[key].v, f: s[key].f, w: s[key].w }
+        }
+      })
+      res[name] = { ref: s['!ref'], cells }
+    }
+  })
+  return res
+}
+
+export async function dumpReferenceWorkbook(): Promise<any> {
+  const resp = await fetch(xlsxAssetUrl)
+  const buf = await resp.arrayBuffer()
+  return parseWorkbookBuffer(buf)
+}
+
+/**
+ * Dump estático formatado em linhas da aba Simulador e REGRAS
+ */
+export async function getReferenceSheetRows(): Promise<string[]> {
+  const dump = await dumpReferenceWorkbook()
+  const lines: string[] = []
+  dump.sheetNames.forEach((sheetName: string) => {
+    lines.push(`\n=== ABA: ${sheetName} ===`)
+    const sheetData = dump[sheetName]
+    if (!sheetData || !sheetData.cells) return
+    const cells = sheetData.cells
+    // Agrupar por linha
+    const rowMap: Record<number, { col: string; ref: string; v: any; f?: string }[]> = {}
+    Object.keys(cells).forEach((ref) => {
+      const match = ref.match(/^([A-Z]+)(\d+)$/)
+      if (match) {
+        const col = match[1]
+        const r = parseInt(match[2], 10)
+        if (!rowMap[r]) rowMap[r] = []
+        rowMap[r].push({ col, ref, v: cells[ref].v, f: cells[ref].f })
+      }
+    })
+    const sortedRows = Object.keys(rowMap).map(Number).sort((a, b) => a - b)
+    sortedRows.forEach((r) => {
+      const rowCells = rowMap[r].sort((a, b) => a.col.localeCompare(b.col))
+      const rowDesc = rowCells
+        .map((c) => `${c.ref}=${JSON.stringify(c.v)}${c.f ? ` [FORMULA: =${c.f}]` : ''}`)
+        .join(' | ')
+      lines.push(`L${r}: ${rowDesc}`)
+    })
+  })
+  return lines
+}
+
 export async function readSpreadsheetFile(
   file: File,
   targetSheet?: string | number,
@@ -255,6 +322,33 @@ export async function readSpreadsheetFile(
   if (extension === 'csv' || extension === 'txt' || extension === 'tsv') {
     const text = await file.text()
     return parseCsvText(text)
+  }
+
+  // Dump especial para inspecionar planilha embutida se o nome for dump
+  // @ts-expect-error window helper
+  if (typeof window !== 'undefined' && !window.__dumpWorkbook) {
+    // @ts-expect-error window helper
+    window.__dumpWorkbook = (wb: any) => {
+      console.log('SheetNames:', wb.SheetNames)
+      wb.SheetNames.forEach((sName: string) => {
+        console.log(`=== ABA: ${sName} ===`)
+        const s = wb.Sheets[sName]
+        const range = XLSX.utils.decode_range(s['!ref'] || 'A1:Z100')
+        for (let R = range.s.r; R <= range.e.r; ++R) {
+          const rowData: any[] = []
+          for (let C = range.s.c; C <= range.e.c; ++C) {
+            const cellRef = XLSX.utils.encode_cell({ r: R, c: C })
+            const cell = s[cellRef]
+            if (cell) {
+              rowData.push(`${cellRef}: [val=${cell.v}, form=${cell.f || ''}]`)
+            }
+          }
+          if (rowData.length > 0) {
+            console.log(`L${R + 1}: ${rowData.join(' | ')}`)
+          }
+        }
+      })
+    }
   }
 
   // Para arquivos Excel (.xlsx, .xls)
