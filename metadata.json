@@ -2,7 +2,5 @@
   "name": "Simulador Comercial e Fiscal Agro",
   "description": "Plataforma de simulação de margens comerciais, tributação de ICMS interestadual e gestão de produtos agrícolas.",
   "permissions": [],
-  "capabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
+  "capabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
