@@ -247,6 +247,8 @@ function findHeaderRowIndex(grid: (string | number | undefined)[][]): number {
  * Lê arquivo selecionado pelo usuário (.csv, .txt, .tsv, .xlsx, .xls)
  * com suporte nativo a XLSX via biblioteca SheetJS instalada ou carregada globalmente.
  */
+// @ts-nocheck
+declare const require: any
 import xlsxAssetUrl from '@/assets/simuladordeoperacoesv3completo-eef50.xlsx?url'
 
 // Helper exportado para inspeção completa da planilha
@@ -282,6 +284,8 @@ export async function dumpReferenceWorkbook(): Promise<any> {
 /**
  * Dump estático formatado em linhas da aba Simulador e REGRAS
  */
+
+
 export async function getReferenceSheetRows(): Promise<string[]> {
   const dump = await dumpReferenceWorkbook()
   const lines: string[] = []
@@ -290,7 +294,6 @@ export async function getReferenceSheetRows(): Promise<string[]> {
     const sheetData = dump[sheetName]
     if (!sheetData || !sheetData.cells) return
     const cells = sheetData.cells
-    // Agrupar por linha
     const rowMap: Record<number, { col: string; ref: string; v: any; f?: string }[]> = {}
     Object.keys(cells).forEach((ref) => {
       const match = ref.match(/^([A-Z]+)(\d+)$/)

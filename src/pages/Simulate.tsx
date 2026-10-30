@@ -128,6 +128,8 @@ const PRODUTOS_SEED_DEMO: ProdutoBaseSimulador[] = [
   },
 ]
 
+
+
 export function Simulate() {
   const { toast } = useToast()
 
