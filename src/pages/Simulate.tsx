@@ -47,6 +47,68 @@ import {
   calcularDataVencimento,
 } from '@/lib/motorSimulador'
 import { SimProdutoBase, SimRegraIcms } from '@/types/simulador'
+import { formatarValor2Casas, formatarMoeda2Casas } from '@/lib/utils'
+
+interface InputValor2CasasProps
+  extends Omit<React.ComponentProps<typeof Input>, 'value' | 'onChange' | 'type'> {
+  value: number
+  onValueChange: (novoValor: number) => void
+  min?: number
+}
+
+function InputValor2Casas({
+  value,
+  onValueChange,
+  min = 0,
+  className,
+  disabled,
+  readOnly,
+  ...props
+}: InputValor2CasasProps) {
+  const [focused, setFocused] = useState(false)
+  const [rawText, setRawText] = useState('')
+
+  const parseInput = (texto: string): number => {
+    const limpo = texto.replace(/[^\d.,-]/g, '').trim()
+    if (!limpo || limpo === '-') return min
+    const normalizado = limpo.includes(',')
+      ? limpo.replace(/\./g, '').replace(',', '.')
+      : limpo
+    const parsed = parseFloat(normalizado)
+    if (isNaN(parsed)) return min
+    return Math.max(min, Number(parsed.toFixed(2)))
+  }
+
+  return (
+    <Input
+      {...props}
+      type="text"
+      inputMode="decimal"
+      disabled={disabled}
+      readOnly={readOnly}
+      className={className}
+      value={disabled || readOnly || !focused ? formatarValor2Casas(value) : rawText}
+      onFocus={(e) => {
+        if (disabled || readOnly) return
+        setFocused(true)
+        setRawText((Number(value) || 0).toFixed(2).replace('.', ','))
+        props.onFocus?.(e)
+      }}
+      onChange={(e) => {
+        if (disabled || readOnly) return
+        const txt = e.target.value
+        setRawText(txt)
+        onValueChange(parseInput(txt))
+      }}
+      onBlur={(e) => {
+        setFocused(false)
+        const finalVal = parseInput(rawText)
+        onValueChange(finalVal)
+        props.onBlur?.(e)
+      }}
+    />
+  )
+}
 
 // Lista canônica de UFs do Brasil
 const UFS_BRASIL = [
@@ -143,17 +205,15 @@ export function Simulate() {
   const [volumePorEmbalagem, setVolumePorEmbalagem] = useState<number>(20)
   const [modoEdicaoQtd, setModoEdicaoQtd] = useState<'volume' | 'embalagens'>('volume')
 
-  // Câmbio PTAX manual (para insumos importados / cotados em USD)
-  const [ptaxManual, setPtaxManual] = useState<number>(5.75)
-
   // ---------------------------------------------------------------------------
   // 2. OPERAÇÃO DE COMPRA (AQUISIÇÃO)
   // ---------------------------------------------------------------------------
   const hoje = formatarDataIso()
   const [dataCompra, setDataCompra] = useState<string>(hoje)
   const [prazoCompraDias, setPrazoCompraDias] = useState<number>(30)
-  const [precoUnitarioCompra, setPrecoUnitarioCompra] = useState<number>(28.0)
   const [moedaCompra, setMoedaCompra] = useState<'BRL' | 'USD'>('BRL')
+  const [taxaDolarCompra, setTaxaDolarCompra] = useState<number>(5.75)
+  const [precoUnitarioCompra, setPrecoUnitarioCompra] = useState<number>(28.0)
   const [ufOrigemCompra, setUfOrigemCompra] = useState<string>('SP')
   const [ufDestinoCompra, setUfDestinoCompra] = useState<string>('SP')
   const [modalidadeFreteCompra, setModalidadeFreteCompra] = useState<ModalidadeFrete>('FOB')
@@ -161,7 +221,7 @@ export function Simulate() {
   const [seguroCompra, setSeguroCompra] = useState<number>(200)
   const [outrasDespesasCompra, setOutrasDespesasCompra] = useState<number>(100)
   const [taxaJurosCompraMensal, setTaxaJurosCompraMensal] = useState<number>(1.2) // % a.m.
-  const [creditarIcmsCompra, setCreditarIcmsCompra] = useState<boolean>(true)
+  const [creditarIcmsCompra] = useState<boolean>(true)
   const [aliquotaIcmsCreditoCompra, setAliquotaIcmsCreditoCompra] = useState<number>(4.0)
   const [regraIcmsCompraAtual, setRegraIcmsCompraAtual] = useState<SimRegraIcms | null>(null)
   const [alertaRegraCompra, setAlertaRegraCompra] = useState<string | null>(null)
@@ -171,8 +231,9 @@ export function Simulate() {
   // ---------------------------------------------------------------------------
   const [dataVenda, setDataVenda] = useState<string>(hoje)
   const [prazoVendaDias, setPrazoVendaDias] = useState<number>(60)
-  const [precoUnitarioVenda, setPrecoUnitarioVenda] = useState<number>(45.0)
   const [moedaVenda, setMoedaVenda] = useState<'BRL' | 'USD'>('BRL')
+  const [taxaDolarVenda, setTaxaDolarVenda] = useState<number>(5.75)
+  const [precoUnitarioVenda, setPrecoUnitarioVenda] = useState<number>(45.0)
   // Regra de negócio: a UF Origem da venda é obrigatoriamente a UF Destino da compra
   const ufOrigemVenda = ufDestinoCompra
   const [ufDestinoVenda, setUfDestinoVenda] = useState<string>('MT')
@@ -195,7 +256,7 @@ export function Simulate() {
 
   // Resultados
   const [calculando, setCalculando] = useState<boolean>(false)
-  const [, setRegraIcmsAtual] = useState<SimRegraIcms | null>(null)
+  const [regraIcmsAtual, setRegraIcmsAtual] = useState<SimRegraIcms | null>(null)
   const [resultado, setResultado] = useState<SimuladorResultado | null>(null)
   const [mostrarMemoriaCalculo, setMostrarMemoriaCalculo] = useState<boolean>(false)
 
@@ -219,10 +280,11 @@ export function Simulate() {
 
   // Sincronizar quantidade de embalagens quando o volume muda
   const handleAlterarVolume = (novoVolume: number) => {
-    setQuantidade(novoVolume)
+    const volArredondado = Number(novoVolume.toFixed(2))
+    setQuantidade(volArredondado)
     setModoEdicaoQtd('volume')
     if (volumePorEmbalagem > 0) {
-      setQtdEmbalagens(Math.ceil(novoVolume / volumePorEmbalagem))
+      setQtdEmbalagens(Math.max(1, Math.ceil(volArredondado / volumePorEmbalagem)))
     }
   }
 
@@ -230,33 +292,32 @@ export function Simulate() {
     setQtdEmbalagens(novasEmbalagens)
     setModoEdicaoQtd('embalagens')
     if (volumePorEmbalagem > 0) {
-      setQuantidade(novasEmbalagens * volumePorEmbalagem)
+      setQuantidade(Number((novasEmbalagens * volumePorEmbalagem).toFixed(2)))
     }
   }
 
-  const handleAlterarVolumePorEmbalagem = (novoVolEmb: number) => {
-    setVolumePorEmbalagem(novoVolEmb)
-    if (novoVolEmb > 0) {
-      if (modoEdicaoQtd === 'embalagens') {
-        setQuantidade(qtdEmbalagens * novoVolEmb)
-      } else {
-        setQtdEmbalagens(Math.ceil(quantidade / novoVolEmb))
-      }
-    }
-  }
-
-  // Carrega lista de produtos de simulador_produtos
+  // Carrega todos os produtos de simulador_produtos (catálogo completo)
   const carregarProdutos = async () => {
     try {
       setCarregandoProdutos(true)
-      const res = await simuladorDataService.listarProdutosBaseSimulador({
-        perPage: 100,
-        sort: 'descricao',
-      })
-      if (res.items && res.items.length > 0) {
-        setProdutos(res.items)
+      const params = new URLSearchParams(window.location.search)
+      const codigoUrl = params.get('codigo')?.trim()
+
+      const items = await simuladorDataService.listarTodosProdutosBaseSimulador('descricao')
+      if (items && items.length > 0) {
+        setProdutos(items)
+        if (codigoUrl) {
+          const prodUrl = items.find(
+            (p) => p.codigo?.toLowerCase() === codigoUrl.toLowerCase(),
+          )
+          if (prodUrl) {
+            selecionarProduto(prodUrl)
+            setTermoBuscaProduto(prodUrl.codigo || prodUrl.descricao)
+            return
+          }
+        }
         if (!produtoSelecionado) {
-          selecionarProduto(res.items[0])
+          selecionarProduto(items[0])
         }
       } else {
         if (!produtoSelecionado) {
@@ -279,17 +340,9 @@ export function Simulate() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Selecionar produto
+  // Selecionar produto (a moeda pertence exclusivamente à operação de compra ou venda)
   const selecionarProduto = (prod: ProdutoBaseSimulador) => {
     setProdutoSelecionado(prod)
-    const isImp =
-      prod.origem?.toLowerCase().includes('imp') ||
-      prod.descricao.toUpperCase().includes('(IMP)') ||
-      prod.moeda?.toUpperCase() === 'USD'
-
-    const novaMoeda = isImp ? 'USD' : 'BRL'
-    setMoedaCompra(novaMoeda)
-    setMoedaVenda(novaMoeda)
 
     const precoBase =
       prod.preco_base_sugerido && prod.preco_base_sugerido > 0 ? prod.preco_base_sugerido : 30
@@ -307,33 +360,60 @@ export function Simulate() {
       setComissaoVendaPerc(comissaoCalc)
     }
 
-    // Capacidade da embalagem
-    const cap = deduzirCapacidadeEmbalagem(prod.embalagem)
+    // Capacidade da embalagem automática de acordo com o múltiplo do cadastro do produto
+    const cap = deduzirCapacidadeEmbalagem(prod.embalagem, prod.descricao)
     setVolumePorEmbalagem(cap)
-    if (cap > 0 && quantidade > 0) {
-      setQtdEmbalagens(Math.ceil(quantidade / cap))
+    if (cap > 0) {
+      if (modoEdicaoQtd === 'embalagens' && qtdEmbalagens > 0) {
+        setQuantidade(Number((qtdEmbalagens * cap).toFixed(2)))
+      } else {
+        const volBase = quantidade > 0 ? quantidade : 1000
+        const novasEmb = Math.max(1, Math.ceil(volBase / cap))
+        setQtdEmbalagens(novasEmb)
+        setQuantidade(Number((novasEmb * cap).toFixed(2)))
+      }
     }
   }
 
-  // Lista de produtos filtrada para busca rápida
+  // Lista de produtos filtrada para busca rápida em todo o catálogo (1.177+ itens)
   const produtosDisponiveis = useMemo(() => {
     const lista = produtos.length > 0 ? produtos : PRODUTOS_SEED_DEMO
-    if (!termoBuscaProduto.trim()) return lista.slice(0, 30)
-    const t = termoBuscaProduto.toLowerCase()
-    return lista.filter(
-      (p) =>
-        p.descricao.toLowerCase().includes(t) ||
-        (p.ncm && p.ncm.includes(t)) ||
-        (p.codigo && p.codigo.toLowerCase().includes(t)) ||
-        (p.principio_ativo && p.principio_ativo.toLowerCase().includes(t)),
-    )
-  }, [produtos, termoBuscaProduto])
+    const rawTerm = termoBuscaProduto.trim()
+    if (!rawTerm) return lista.slice(0, 50)
 
-  const isProdutoImportado =
-    moedaCompra === 'USD' ||
-    moedaVenda === 'USD' ||
-    produtoSelecionado?.origem?.toLowerCase().includes('imp') ||
-    produtoSelecionado?.descricao.toUpperCase().includes('(IMP)')
+    const normalize = (str?: string) =>
+      (str || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+
+    const t = normalize(rawTerm)
+    const tDigits = rawTerm.replace(/\D/g, '')
+
+    return lista
+      .filter((p) => {
+        const desc = normalize(p.descricao)
+        const cod = normalize(p.codigo)
+        const ncm = normalize(p.ncm)
+        const ncmDigits = (p.ncm || '').replace(/\D/g, '')
+        const pa = normalize(p.principio_ativo)
+        const grupo = normalize(p.grupo_descricao)
+        const grTribDesc = normalize(p.descricao_grupo_tributario)
+        const seg = normalize(p.segmento)
+
+        return (
+          desc.includes(t) ||
+          cod.includes(t) ||
+          ncm.includes(t) ||
+          (tDigits.length >= 2 && ncmDigits.includes(tDigits)) ||
+          pa.includes(t) ||
+          grupo.includes(t) ||
+          grTribDesc.includes(t) ||
+          seg.includes(t)
+        )
+      })
+      .slice(0, 100)
+  }, [produtos, termoBuscaProduto])
 
   // Atualiza regra fiscal da compra e alíquota de ICMS correspondente
   useEffect(() => {
@@ -376,6 +456,143 @@ export function Simulate() {
     }
   }, [ufOrigemCompra, ufDestinoCompra, produtoSelecionado])
 
+  // Atualiza regra fiscal da venda quando UF origem/destino de venda ou produto muda
+  useEffect(() => {
+    let cancelado = false
+    const atualizarRegraVenda = async () => {
+      if (!produtoSelecionado) return
+      try {
+        const regra = await simuladorDataService.obterRegraIcms(
+          ufOrigemVenda,
+          ufDestinoVenda,
+          produtoSelecionado.gr_trib,
+        )
+        if (!cancelado) {
+          setRegraIcmsAtual(regra)
+        }
+      } catch (e) {
+        if (!cancelado) {
+          console.warn('Erro ao buscar regra ICMS de venda:', e)
+        }
+      }
+    }
+
+    atualizarRegraVenda()
+    return () => {
+      cancelado = true
+    }
+  }, [ufOrigemVenda, ufDestinoVenda, produtoSelecionado])
+
+  // Sugestão de Preço Unitário de Venda em tempo real a partir da Margem Alvo (%) dentro da Operação de Venda
+  const sugestaoPrecoVenda = useMemo(() => {
+    const prod = produtoSelecionado || PRODUTOS_SEED_DEMO[0]
+    const taxaCompraValida = moedaCompra === 'USD' ? Math.max(0.0001, taxaDolarCompra || 1) : 1.0
+    const taxaVendaValida = moedaVenda === 'USD' ? Math.max(0.0001, taxaDolarVenda || 1) : 1.0
+
+    const sim = executarCalculoSimulador({
+      produto: prod,
+      quantidade,
+      qtdEmbalagens,
+      volumePorEmbalagem,
+      unidade: prod.unidade,
+      embalagem: prod.embalagem,
+      ptaxManual: taxaVendaValida,
+      compra: {
+        dataOperacao: dataCompra,
+        prazoDias: prazoCompraDias,
+        precoUnitario: precoUnitarioCompra,
+        moeda: moedaCompra,
+        ptaxManual: taxaCompraValida,
+        ufOrigem: ufOrigemCompra,
+        ufDestino: ufDestinoCompra,
+        regraIcms: regraIcmsCompraAtual,
+        modalidadeFrete: modalidadeFreteCompra,
+        frete: freteCompra,
+        seguro: seguroCompra,
+        outrasDespesas: outrasDespesasCompra,
+        taxaJurosMensalPerc: taxaJurosCompraMensal,
+        creditarIcms: creditarIcmsCompra,
+        aliquotaIcmsCreditoManual: aliquotaIcmsCreditoCompra,
+      },
+      venda: {
+        dataOperacao: dataVenda,
+        prazoDias: prazoVendaDias,
+        precoUnitario: precoUnitarioVenda,
+        moeda: moedaVenda,
+        ptaxManual: taxaVendaValida,
+        ufOrigem: ufOrigemVenda,
+        ufDestino: ufDestinoVenda,
+        enquadramentoCliente,
+        modalidadeFrete: modalidadeFreteVenda,
+        frete: freteVenda,
+        seguro: seguroVenda,
+        outrasDespesas: outrasDespesasVenda,
+        comissaoPerc: comissaoVendaPerc,
+        taxaJurosMensalPerc: taxaJurosVendaMensal,
+        margemAlvoPerc,
+        regraIcms: regraIcmsAtual,
+        considerarReoneracao2026,
+        usarAliquotaReformaPlena,
+      },
+    })
+
+    const unitarioReais = sim.precoVendaSugeridoUnitario
+    const unitarioMoedaVenda =
+      moedaVenda === 'USD' ? unitarioReais / taxaVendaValida : unitarioReais
+    const breakEvenUnitarioReais =
+      sim.volumeTotal > 0 ? sim.precoMinimoBreakEven / sim.volumeTotal : 0
+    const breakEvenUnitarioMoedaVenda =
+      moedaVenda === 'USD' ? breakEvenUnitarioReais / taxaVendaValida : breakEvenUnitarioReais
+
+    return {
+      unitarioReais,
+      unitarioMoedaVenda,
+      totalReais: sim.precoVendaSugerido,
+      breakEvenUnitarioReais,
+      breakEvenUnitarioMoedaVenda,
+      markupMultiplicador: sim.markupMultiplicador,
+      cargaTributariaEfetivaPerc: sim.cargaTributariaEfetivaPerc,
+    }
+  }, [
+    produtoSelecionado,
+    quantidade,
+    qtdEmbalagens,
+    volumePorEmbalagem,
+    dataCompra,
+    prazoCompraDias,
+    precoUnitarioCompra,
+    moedaCompra,
+    taxaDolarCompra,
+    ufOrigemCompra,
+    ufDestinoCompra,
+    regraIcmsCompraAtual,
+    modalidadeFreteCompra,
+    freteCompra,
+    seguroCompra,
+    outrasDespesasCompra,
+    taxaJurosCompraMensal,
+    creditarIcmsCompra,
+    aliquotaIcmsCreditoCompra,
+    dataVenda,
+    prazoVendaDias,
+    precoUnitarioVenda,
+    moedaVenda,
+    taxaDolarVenda,
+    ufOrigemVenda,
+    ufDestinoVenda,
+    enquadramentoCliente,
+    modalidadeFreteVenda,
+    freteVenda,
+    seguroVenda,
+    outrasDespesasVenda,
+    comissaoVendaPerc,
+    taxaJurosVendaMensal,
+    margemAlvoPerc,
+    regraIcmsAtual,
+    considerarReoneracao2026,
+    usarAliquotaReformaPlena,
+  ])
+
   // Executa Simulação Comercial Segregada (Compra, Venda e Resultado)
   const handleSimular = async () => {
     if (!produtoSelecionado) {
@@ -387,11 +604,21 @@ export function Simulate() {
       return
     }
 
-    if (isProdutoImportado && (!ptaxManual || ptaxManual <= 0)) {
+    if (moedaCompra === 'USD' && (!taxaDolarCompra || taxaDolarCompra <= 0)) {
       toast({
-        title: 'PTAX Manual Obrigatória',
+        title: 'Taxa do Dólar na Compra Obrigatória',
         description:
-          'Para produtos importados cotados em dólar (USD), informe a cotação PTAX manual.',
+          'Para operação de compra em Dólar (USD), informe uma taxa de câmbio válida maior que zero.',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    if (moedaVenda === 'USD' && (!taxaDolarVenda || taxaDolarVenda <= 0)) {
+      toast({
+        title: 'Taxa do Dólar na Venda Obrigatória',
+        description:
+          'Para operação de venda em Dólar (USD), informe uma taxa de câmbio válida maior que zero.',
         variant: 'destructive',
       })
       return
@@ -441,7 +668,7 @@ export function Simulate() {
         volumePorEmbalagem,
         unidade: produtoSelecionado.unidade,
         embalagem: produtoSelecionado.embalagem,
-        ptaxManual: isProdutoImportado ? ptaxManual : 1.0,
+        ptaxManual: moedaVenda === 'USD' ? taxaDolarVenda : 1.0,
 
         // Bloco Segregado de COMPRA
         compra: {
@@ -449,7 +676,7 @@ export function Simulate() {
           prazoDias: prazoCompraDias,
           precoUnitario: precoUnitarioCompra,
           moeda: moedaCompra,
-          ptaxManual: isProdutoImportado ? ptaxManual : 1.0,
+          ptaxManual: moedaCompra === 'USD' ? taxaDolarCompra : 1.0,
           ufOrigem: ufOrigemCompra,
           ufDestino: ufDestinoCompra,
           regraIcms: regraCompra,
@@ -468,7 +695,7 @@ export function Simulate() {
           prazoDias: prazoVendaDias,
           precoUnitario: precoUnitarioVenda,
           moeda: moedaVenda,
-          ptaxManual: isProdutoImportado ? ptaxManual : 1.0,
+          ptaxManual: moedaVenda === 'USD' ? taxaDolarVenda : 1.0,
           ufOrigem: ufOrigemVenda,
           ufDestino: ufDestinoVenda,
           enquadramentoCliente,
@@ -519,6 +746,10 @@ export function Simulate() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     produtoSelecionado,
+    moedaCompra,
+    taxaDolarCompra,
+    moedaVenda,
+    taxaDolarVenda,
     ufOrigemCompra,
     ufDestinoCompra,
     ufOrigemVenda,
@@ -532,11 +763,18 @@ export function Simulate() {
 
   // Resetar valores do formulário para valores padrão
   const handleResetarFormulario = () => {
-    setQuantidade(1000)
-    setQtdEmbalagens(50)
-    setVolumePorEmbalagem(20)
+    const cap = deduzirCapacidadeEmbalagem(
+      produtoSelecionado?.embalagem,
+      produtoSelecionado?.descricao,
+    )
+    const embPadrao = cap > 0 ? Math.max(1, Math.ceil(1000 / cap)) : 50
+    setVolumePorEmbalagem(cap)
+    setQtdEmbalagens(embPadrao)
+    setQuantidade(Number((embPadrao * cap).toFixed(2)))
     setDataCompra(hoje)
     setPrazoCompraDias(30)
+    setMoedaCompra('BRL')
+    setTaxaDolarCompra(5.75)
     setModalidadeFreteCompra('FOB')
     setUfOrigemCompra('SP')
     setUfDestinoCompra('SP')
@@ -547,6 +785,8 @@ export function Simulate() {
     setTaxaJurosCompraMensal(1.2)
     setDataVenda(hoje)
     setPrazoVendaDias(60)
+    setMoedaVenda('BRL')
+    setTaxaDolarVenda(5.75)
     setModalidadeFreteVenda('CIF')
     setFreteVenda(2500)
     setSeguroVenda(350)
@@ -554,7 +794,6 @@ export function Simulate() {
     setComissaoVendaPerc(2.5)
     setTaxaJurosVendaMensal(1.8)
     setMargemAlvoPerc(15)
-    setPtaxManual(5.75)
     setEnquadramentoCliente('produtor_rural')
     if (produtoSelecionado?.preco_base_sugerido) {
       setPrecoUnitarioCompra(produtoSelecionado.preco_base_sugerido)
@@ -771,11 +1010,6 @@ export function Simulate() {
                                         GrTrib {p.gr_trib}
                                       </span>
                                     )}
-                                    {p.moeda && (
-                                      <span className="font-bold text-emerald-700 font-mono">
-                                        ({p.moeda})
-                                      </span>
-                                    )}
                                   </div>
                                 </div>
                                 {isSelected && (
@@ -835,24 +1069,6 @@ export function Simulate() {
                               </span>
                             </div>
                           </div>
-
-                          {/* Bloco PTAX Manual se for em moeda estrangeira ou importado */}
-                          {isProdutoImportado && (
-                            <div className="p-2 bg-amber-50 rounded-lg border border-amber-300 flex items-center justify-between gap-2 text-xs">
-                              <div className="flex items-center gap-1.5 text-amber-900 font-semibold">
-                                <DollarSign className="w-3.5 h-3.5 text-amber-700" />
-                                <span>PTAX Manual (US$ 1,00 = R$):</span>
-                              </div>
-                              <Input
-                                type="number"
-                                step="0.0001"
-                                min="0.0001"
-                                value={ptaxManual}
-                                onChange={(e) => setPtaxManual(Number(e.target.value))}
-                                className="w-24 h-7 text-xs font-mono font-bold bg-white border-amber-300"
-                              />
-                            </div>
-                          )}
                         </div>
                       ) : (
                         <div className="p-6 border border-dashed border-[#DCE5DC] rounded-xl text-center text-xs text-gray-500">
@@ -871,37 +1087,40 @@ export function Simulate() {
                           {produtoSelecionado?.unidade || 'L'}
                         </span>
                       </Label>
-                      <Input
-                        type="number"
-                        min="1"
+                      <InputValor2Casas
+                        min={0.01}
                         value={quantidade}
-                        onChange={(e) => handleAlterarVolume(Math.max(1, Number(e.target.value)))}
+                        onValueChange={(val) => handleAlterarVolume(Math.max(0.01, val))}
                         className="text-xs h-9 bg-white border-emerald-200 font-bold text-gray-900"
                       />
                       <span className="text-[10px] text-gray-500 block">
-                        Volume total negociado (L / Kg)
+                        Volume total negociado ({formatarValor2Casas(quantidade)}{' '}
+                        {produtoSelecionado?.unidade || 'L'})
                       </span>
                     </div>
 
                     <div className="space-y-1.5">
                       <Label className="text-xs font-semibold text-emerald-950 flex items-center justify-between">
                         <span>Capacidade por Embalagem</span>
-                        <span className="text-[10px] text-gray-500 font-normal">
-                          {produtoSelecionado?.unidade || 'L'}/emb.
-                        </span>
+                        <Badge
+                          variant="outline"
+                          className="text-[9px] h-4 px-1 bg-emerald-100/80 text-emerald-800 border-emerald-300"
+                        >
+                          Auto • Múltiplo ({produtoSelecionado?.unidade || 'L'}/emb.)
+                        </Badge>
                       </Label>
                       <Input
-                        type="number"
-                        min="0.1"
-                        step="0.1"
-                        value={volumePorEmbalagem}
-                        onChange={(e) =>
-                          handleAlterarVolumePorEmbalagem(Math.max(0.1, Number(e.target.value)))
-                        }
-                        className="text-xs h-9 bg-white border-emerald-200 font-semibold text-gray-900"
+                        type="text"
+                        value={formatarValor2Casas(volumePorEmbalagem)}
+                        readOnly
+                        disabled
+                        title="Definido automaticamente de acordo com o múltiplo da embalagem no cadastro do produto"
+                        className="text-xs h-9 bg-gray-100/90 border-emerald-200/80 font-bold text-gray-800 cursor-not-allowed opacity-100"
                       />
-                      <span className="text-[10px] text-gray-500 block truncate">
-                        Emb: {produtoSelecionado?.embalagem || 'Padrão'}
+                      <span className="text-[10px] text-emerald-800 font-medium block truncate">
+                        Múltiplo do cadastro: {produtoSelecionado?.embalagem || 'Padrão'} (
+                        {formatarValor2Casas(volumePorEmbalagem)}{' '}
+                        {produtoSelecionado?.unidade || 'L'})
                       </span>
                     </div>
 
@@ -920,7 +1139,7 @@ export function Simulate() {
                         className="text-xs h-9 bg-white border-emerald-200 font-bold text-gray-900"
                       />
                       <span className="text-[10px] text-gray-500 block">
-                        = {qtdEmbalagens} × {volumePorEmbalagem}{' '}
+                        = {qtdEmbalagens} × {formatarValor2Casas(volumePorEmbalagem)}{' '}
                         {produtoSelecionado?.unidade || 'L'}
                       </span>
                     </div>
@@ -951,13 +1170,17 @@ export function Simulate() {
                         Vencimento: {vencimentoCompraCalculado} ({prazoCompraDias} dias)
                       </Badge>
                       <Badge className="bg-sky-50 text-sky-800 border-sky-200 font-mono">
-                        Juros: {jurosCompraEfetivoPerc.toFixed(2)}% efetivo
+                        Juros: {formatarValor2Casas(jurosCompraEfetivoPerc)}% efetivo
                       </Badge>
                     </div>
                   </div>
 
-                  {/* Campos da Compra - Linha 1 (Prazos, Preço e Juros) */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                  {/* Campos da Compra - Linha 1 (Prazos, Moeda, Taxa Dólar, Preço e Juros) */}
+                  <div
+                    className={`grid grid-cols-1 sm:grid-cols-2 ${
+                      moedaCompra === 'USD' ? 'md:grid-cols-6' : 'md:grid-cols-5'
+                    } gap-3 text-xs`}
+                  >
                     {/* Data da Compra */}
                     <div className="space-y-1">
                       <Label className="text-xs font-semibold text-gray-800 flex items-center gap-1">
@@ -990,22 +1213,61 @@ export function Simulate() {
                       />
                     </div>
 
+                    {/* Moeda da Operação de Compra (Reais ou Dólar) */}
+                    <div className="space-y-1">
+                      <Label className="text-xs font-semibold text-gray-800 flex items-center gap-1">
+                        <DollarSign className="w-3.5 h-3.5 text-sky-700" />
+                        Moeda da Compra
+                      </Label>
+                      <select
+                        value={moedaCompra}
+                        onChange={(e) => setMoedaCompra(e.target.value as 'BRL' | 'USD')}
+                        className="w-full h-8 text-xs rounded-md border border-sky-200 bg-white px-2 font-bold text-sky-950"
+                      >
+                        <option value="BRL">Reais (R$ - BRL)</option>
+                        <option value="USD">Dólar (US$ - USD)</option>
+                      </select>
+                    </div>
+
+                    {/* Taxa do Dólar na Compra (habilitado quando escolher Dólar) */}
+                    {moedaCompra === 'USD' && (
+                      <div className="space-y-1 animate-in fade-in duration-150">
+                        <Label className="text-xs font-semibold text-amber-900 flex items-center justify-between">
+                          <span className="flex items-center gap-1">
+                            <DollarSign className="w-3.5 h-3.5 text-amber-700" />
+                            Taxa do Dólar (R$)
+                          </span>
+                          <span className="text-[10px] font-mono text-amber-800">US$ 1,00</span>
+                        </Label>
+                        <InputValor2Casas
+                          min={0.01}
+                          value={taxaDolarCompra}
+                          onValueChange={(val) => setTaxaDolarCompra(Math.max(0.01, val))}
+                          className="h-8 text-xs font-mono font-bold border-amber-300 bg-amber-50/60 text-amber-950"
+                        />
+                      </div>
+                    )}
+
                     {/* Preço Unitário de Compra */}
                     <div className="space-y-1">
                       <Label className="text-xs font-semibold text-gray-800 flex items-center justify-between">
-                        <span>Preço de Compra</span>
+                        <span>Preço de Compra ({moedaCompra === 'USD' ? 'US$' : 'R$'})</span>
                         <Badge variant="outline" className="text-[10px] py-0 h-4 border-sky-300">
                           {moedaCompra}
                         </Badge>
                       </Label>
-                      <Input
-                        type="number"
-                        step="0.01"
-                        min="0"
+                      <InputValor2Casas
+                        min={0}
                         value={precoUnitarioCompra}
-                        onChange={(e) => setPrecoUnitarioCompra(Number(e.target.value))}
+                        onValueChange={(val) => setPrecoUnitarioCompra(val)}
                         className="h-8 text-xs font-bold border-sky-200 bg-white"
                       />
+                      {moedaCompra === 'USD' && (
+                        <p className="text-[10px] font-mono text-sky-800 font-semibold">
+                          = R$ {formatarValor2Casas(precoUnitarioCompra * (taxaDolarCompra || 0))} /{' '}
+                          {produtoSelecionado?.unidade || 'unid'}
+                        </p>
+                      )}
                     </div>
 
                     {/* Taxa de Juros de Compra (% a.m.) */}
@@ -1016,17 +1278,13 @@ export function Simulate() {
                           Juros Compra (% a.m.)
                         </span>
                         <span className="text-[10px] text-sky-700 font-bold">
-                          {jurosCompraEfetivoPerc.toFixed(2)}% no prazo
+                          {formatarValor2Casas(jurosCompraEfetivoPerc)}% no prazo
                         </span>
                       </Label>
-                      <Input
-                        type="number"
-                        step="0.1"
-                        min="0"
+                      <InputValor2Casas
+                        min={0}
                         value={taxaJurosCompraMensal}
-                        onChange={(e) =>
-                          setTaxaJurosCompraMensal(Math.max(0, Number(e.target.value)))
-                        }
+                        onValueChange={(val) => setTaxaJurosCompraMensal(val)}
                         className="h-8 text-xs border-sky-200 bg-white"
                       />
                     </div>
@@ -1057,11 +1315,10 @@ export function Simulate() {
                       <Label className="text-xs font-semibold text-gray-800">
                         Valor do Frete (R$)
                       </Label>
-                      <Input
-                        type="number"
-                        min="0"
+                      <InputValor2Casas
+                        min={0}
                         value={freteCompra}
-                        onChange={(e) => setFreteCompra(Math.max(0, Number(e.target.value)))}
+                        onValueChange={(val) => setFreteCompra(val)}
                         className="h-8 text-xs border-sky-200 bg-white"
                       />
                     </div>
@@ -1072,21 +1329,17 @@ export function Simulate() {
                         Seguro & Outros (R$)
                       </Label>
                       <div className="grid grid-cols-2 gap-1.5">
-                        <Input
-                          type="number"
-                          min="0"
+                        <InputValor2Casas
+                          min={0}
                           value={seguroCompra}
-                          onChange={(e) => setSeguroCompra(Math.max(0, Number(e.target.value)))}
+                          onValueChange={(val) => setSeguroCompra(val)}
                           placeholder="Seguro"
                           className="h-8 text-xs border-sky-200 bg-white"
                         />
-                        <Input
-                          type="number"
-                          min="0"
+                        <InputValor2Casas
+                          min={0}
                           value={outrasDespesasCompra}
-                          onChange={(e) =>
-                            setOutrasDespesasCompra(Math.max(0, Number(e.target.value)))
-                          }
+                          onValueChange={(val) => setOutrasDespesasCompra(val)}
                           placeholder="Outros"
                           className="h-8 text-xs border-sky-200 bg-white"
                         />
@@ -1147,7 +1400,11 @@ export function Simulate() {
                           type="text"
                           readOnly
                           disabled
-                          value={regraIcmsCompraAtual ? `${aliquotaIcmsCreditoCompra}%` : '0%'}
+                          value={
+                            regraIcmsCompraAtual
+                              ? `${formatarValor2Casas(aliquotaIcmsCreditoCompra)}%`
+                              : '0,00%'
+                          }
                           aria-readonly="true"
                           title="Preenchido automaticamente pela Regra Fiscal (bloqueado para edição)"
                           className={`w-full h-8 text-xs rounded-md border px-2.5 font-bold cursor-not-allowed select-none opacity-90 shadow-inner ${
@@ -1190,14 +1447,15 @@ export function Simulate() {
                           {regraIcmsCompraAtual.grupo_tributario_codigo
                             ? ` (GrTrib: ${regraIcmsCompraAtual.grupo_tributario_codigo})`
                             : ' (Geral)'}
-                          {' — '}Alíquota Nominal: {regraIcmsCompraAtual.aliquota_icms}%
+                          {' — '}Alíquota Nominal:{' '}
+                          {formatarValor2Casas(regraIcmsCompraAtual.aliquota_icms)}%
                           {regraIcmsCompraAtual.reducao_base !== undefined &&
                           regraIcmsCompraAtual.reducao_base !== null
-                            ? ` | Redução: ${regraIcmsCompraAtual.reducao_base}%`
+                            ? ` | Redução: ${formatarValor2Casas(regraIcmsCompraAtual.reducao_base)}%`
                             : ''}
                           {regraIcmsCompraAtual.aliquota_efetiva !== undefined &&
                           regraIcmsCompraAtual.aliquota_efetiva !== null
-                            ? ` | Alíquota Efetiva: ${regraIcmsCompraAtual.aliquota_efetiva}%`
+                            ? ` | Alíquota Efetiva: ${formatarValor2Casas(regraIcmsCompraAtual.aliquota_efetiva)}%`
                             : ''}
                         </span>
                       </div>
@@ -1206,8 +1464,10 @@ export function Simulate() {
                         className="text-[10px] border-sky-300 text-sky-800 bg-white"
                       >
                         ICMS Carga{' '}
-                        {regraIcmsCompraAtual.aliquota_efetiva ??
-                          regraIcmsCompraAtual.aliquota_icms}
+                        {formatarValor2Casas(
+                          regraIcmsCompraAtual.aliquota_efetiva ??
+                            regraIcmsCompraAtual.aliquota_icms,
+                        )}
                         %
                       </Badge>
                     </div>
@@ -1236,12 +1496,17 @@ export function Simulate() {
                         Vencimento: {vencimentoVendaCalculado} ({prazoVendaDias} dias)
                       </Badge>
                       <Badge className="bg-emerald-50 text-emerald-800 border-emerald-200 font-mono">
-                        Juros: {jurosVendaEfetivoPerc.toFixed(2)}% efetivo
+                        Juros: {formatarValor2Casas(jurosVendaEfetivoPerc)}% efetivo
                       </Badge>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                  {/* Campos da Venda - Linha 1 (Prazos, Moeda, Taxa Dólar, Preço e Juros) */}
+                  <div
+                    className={`grid grid-cols-1 sm:grid-cols-2 ${
+                      moedaVenda === 'USD' ? 'md:grid-cols-6' : 'md:grid-cols-5'
+                    } gap-3 text-xs`}
+                  >
                     {/* Data da Venda */}
                     <div className="space-y-1">
                       <Label className="text-xs font-semibold text-gray-800 flex items-center gap-1">
@@ -1274,10 +1539,45 @@ export function Simulate() {
                       />
                     </div>
 
+                    {/* Moeda da Operação de Venda (Reais ou Dólar) */}
+                    <div className="space-y-1">
+                      <Label className="text-xs font-semibold text-gray-800 flex items-center gap-1">
+                        <DollarSign className="w-3.5 h-3.5 text-[#1B5E20]" />
+                        Moeda da Venda
+                      </Label>
+                      <select
+                        value={moedaVenda}
+                        onChange={(e) => setMoedaVenda(e.target.value as 'BRL' | 'USD')}
+                        className="w-full h-8 text-xs rounded-md border border-emerald-200 bg-white px-2 font-bold text-emerald-950"
+                      >
+                        <option value="BRL">Reais (R$ - BRL)</option>
+                        <option value="USD">Dólar (US$ - USD)</option>
+                      </select>
+                    </div>
+
+                    {/* Taxa do Dólar na Venda (habilitado quando escolher Dólar) */}
+                    {moedaVenda === 'USD' && (
+                      <div className="space-y-1 animate-in fade-in duration-150">
+                        <Label className="text-xs font-semibold text-amber-900 flex items-center justify-between">
+                          <span className="flex items-center gap-1">
+                            <DollarSign className="w-3.5 h-3.5 text-amber-700" />
+                            Taxa do Dólar (R$)
+                          </span>
+                          <span className="text-[10px] font-mono text-amber-800">US$ 1,00</span>
+                        </Label>
+                        <InputValor2Casas
+                          min={0.01}
+                          value={taxaDolarVenda}
+                          onValueChange={(val) => setTaxaDolarVenda(Math.max(0.01, val))}
+                          className="h-8 text-xs font-mono font-bold border-amber-300 bg-amber-50/60 text-amber-950"
+                        />
+                      </div>
+                    )}
+
                     {/* Preço Unitário de Venda */}
                     <div className="space-y-1">
                       <Label className="text-xs font-semibold text-gray-800 flex items-center justify-between">
-                        <span>Preço de Venda</span>
+                        <span>Preço de Venda ({moedaVenda === 'USD' ? 'US$' : 'R$'})</span>
                         <Badge
                           variant="outline"
                           className="text-[10px] py-0 h-4 border-emerald-300"
@@ -1285,14 +1585,37 @@ export function Simulate() {
                           {moedaVenda}
                         </Badge>
                       </Label>
-                      <Input
-                        type="number"
-                        step="0.01"
-                        min="0"
+                      <InputValor2Casas
+                        min={0}
                         value={precoUnitarioVenda}
-                        onChange={(e) => setPrecoUnitarioVenda(Number(e.target.value))}
+                        onValueChange={(val) => setPrecoUnitarioVenda(val)}
                         className="h-8 text-xs font-bold border-emerald-200 bg-white"
                       />
+                      <div className="flex items-center justify-between gap-1 pt-0.5">
+                        {moedaVenda === 'USD' ? (
+                          <span className="text-[10px] font-mono text-emerald-800 font-semibold">
+                            = R$ {formatarValor2Casas(precoUnitarioVenda * (taxaDolarVenda || 0))} /{' '}
+                            {produtoSelecionado?.unidade || 'unid'}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-mono text-gray-500">
+                            Sugerido ({formatarValor2Casas(margemAlvoPerc)}%): R${' '}
+                            {formatarValor2Casas(sugestaoPrecoVenda.unitarioMoedaVenda)}
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setPrecoUnitarioVenda(
+                              Number(sugestaoPrecoVenda.unitarioMoedaVenda.toFixed(2)),
+                            )
+                          }
+                          className="text-[10px] font-bold text-[#1B5E20] hover:underline shrink-0"
+                          title="Aplicar preço unitário sugerido pela Margem Alvo"
+                        >
+                          Usar sugerido
+                        </button>
+                      </div>
                     </div>
 
                     {/* Juros da Venda (% a.m.) */}
@@ -1303,20 +1626,20 @@ export function Simulate() {
                           Juros Venda (% a.m.)
                         </span>
                         <span className="text-[10px] text-[#1B5E20] font-bold">
-                          {jurosVendaEfetivoPerc.toFixed(2)}% no prazo
+                          {formatarValor2Casas(jurosVendaEfetivoPerc)}% no prazo
                         </span>
                       </Label>
-                      <Input
-                        type="number"
-                        step="0.1"
-                        min="0"
+                      <InputValor2Casas
+                        min={0}
                         value={taxaJurosVendaMensal}
-                        onChange={(e) =>
-                          setTaxaJurosVendaMensal(Math.max(0, Number(e.target.value)))
-                        }
+                        onValueChange={(val) => setTaxaJurosVendaMensal(val)}
                         className="h-8 text-xs border-emerald-200 bg-white"
                       />
                     </div>
+                  </div>
+
+                  {/* Campos da Venda - Linha 2 (Rota Fiscal, Cliente, Frete, Despesas, Comissão, Margem, Regime) */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs pt-1">
 
                     {/* Rota Fiscal: Origem e Destino */}
                     <div className="space-y-1">
@@ -1402,11 +1725,10 @@ export function Simulate() {
                       <Label className="text-xs font-semibold text-gray-800">
                         Frete de Venda (R$)
                       </Label>
-                      <Input
-                        type="number"
-                        min="0"
+                      <InputValor2Casas
+                        min={0}
                         value={freteVenda}
-                        onChange={(e) => setFreteVenda(Math.max(0, Number(e.target.value)))}
+                        onValueChange={(val) => setFreteVenda(val)}
                         className="h-8 text-xs border-emerald-200 bg-white font-semibold"
                       />
                     </div>
@@ -1417,21 +1739,17 @@ export function Simulate() {
                         Seguro & Outros Venda (R$)
                       </Label>
                       <div className="grid grid-cols-2 gap-1.5">
-                        <Input
-                          type="number"
-                          min="0"
+                        <InputValor2Casas
+                          min={0}
                           value={seguroVenda}
-                          onChange={(e) => setSeguroVenda(Math.max(0, Number(e.target.value)))}
+                          onValueChange={(val) => setSeguroVenda(val)}
                           placeholder="Seguro"
                           className="h-8 text-xs border-emerald-200 bg-white"
                         />
-                        <Input
-                          type="number"
-                          min="0"
+                        <InputValor2Casas
+                          min={0}
                           value={outrasDespesasVenda}
-                          onChange={(e) =>
-                            setOutrasDespesasVenda(Math.max(0, Number(e.target.value)))
-                          }
+                          onValueChange={(val) => setOutrasDespesasVenda(val)}
                           placeholder="Outros"
                           className="h-8 text-xs border-emerald-200 bg-white"
                         />
@@ -1444,12 +1762,10 @@ export function Simulate() {
                         <span>Comissão Vendas (%)</span>
                         <span className="text-[10px] text-gray-500">s/ faturamento</span>
                       </Label>
-                      <Input
-                        type="number"
-                        step="0.1"
-                        min="0"
+                      <InputValor2Casas
+                        min={0}
                         value={comissaoVendaPerc}
-                        onChange={(e) => setComissaoVendaPerc(Math.max(0, Number(e.target.value)))}
+                        onValueChange={(val) => setComissaoVendaPerc(val)}
                         className="h-8 text-xs border-emerald-200 bg-white"
                       />
                     </div>
@@ -1458,15 +1774,15 @@ export function Simulate() {
                     <div className="space-y-1">
                       <Label className="text-xs font-semibold text-gray-800 flex items-center justify-between">
                         <span>Margem Alvo (%)</span>
-                        <span className="text-[10px] text-gray-500">Markup sugerido</span>
+                        <span className="text-[10px] text-emerald-700 font-semibold">
+                          Define preço sugerido
+                        </span>
                       </Label>
-                      <Input
-                        type="number"
-                        step="0.5"
-                        min="0"
+                      <InputValor2Casas
+                        min={0}
                         value={margemAlvoPerc}
-                        onChange={(e) => setMargemAlvoPerc(Number(e.target.value))}
-                        className="h-8 text-xs border-emerald-200 bg-white"
+                        onValueChange={(val) => setMargemAlvoPerc(val)}
+                        className="h-8 text-xs font-bold border-emerald-300 bg-white"
                       />
                     </div>
 
@@ -1483,7 +1799,7 @@ export function Simulate() {
                           onClick={() => setConsiderarReoneracao2026(!considerarReoneracao2026)}
                           className="h-8 text-[11px] flex-1 px-1 bg-white border-emerald-200"
                         >
-                          {considerarReoneracao2026 ? 'LC 224 (0,92%)' : 'Lei 10.925 (Zero)'}
+                          {considerarReoneracao2026 ? 'LC 224 (0,92%)' : 'Lei 10.925 (0,00%)'}
                         </Button>
                         <Button
                           type="button"
@@ -1496,6 +1812,90 @@ export function Simulate() {
                         </Button>
                       </div>
                     </div>
+                  </div>
+
+                  {/* Painel de Sugestão de Preço Unitário de Venda a partir da Margem Alvo (%) dentro da Operação de Venda */}
+                  <div className="p-3 rounded-xl border border-emerald-300 bg-gradient-to-r from-emerald-100/80 via-emerald-50/90 to-white flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-xs">
+                    <div className="flex flex-wrap items-center gap-4">
+                      <div>
+                        <span className="text-[10px] uppercase font-bold text-emerald-900 tracking-wider block">
+                          Sugestão de Preço Unitário de Venda (Margem Alvo{' '}
+                          {formatarValor2Casas(margemAlvoPerc)}%)
+                        </span>
+                        <div className="flex items-baseline gap-2 mt-0.5">
+                          <span className="text-lg font-mono font-extrabold text-[#1B5E20]">
+                            {moedaVenda === 'USD'
+                              ? formatarMoeda2Casas(sugestaoPrecoVenda.unitarioMoedaVenda, 'USD')
+                              : formatarMoeda2Casas(sugestaoPrecoVenda.unitarioReais, 'BRL')}{' '}
+                            <span className="text-xs font-semibold text-emerald-800">
+                              / {produtoSelecionado?.unidade || 'unid'}
+                            </span>
+                          </span>
+                          {moedaVenda === 'USD' && (
+                            <span className="text-xs font-mono font-semibold text-emerald-800">
+                              (= {formatarMoeda2Casas(sugestaoPrecoVenda.unitarioReais, 'BRL')} /{' '}
+                              {produtoSelecionado?.unidade || 'unid'})
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="h-8 w-px bg-emerald-200 hidden sm:block" />
+
+                      <div className="flex flex-wrap items-center gap-4 text-xs">
+                        <div>
+                          <span className="text-[10px] text-gray-500 block">
+                            Preço Mínimo Unitário (Break-Even 0,00%):
+                          </span>
+                          <span className="font-mono font-bold text-gray-800">
+                            {moedaVenda === 'USD'
+                              ? `${formatarMoeda2Casas(sugestaoPrecoVenda.breakEvenUnitarioMoedaVenda, 'USD')} (${formatarMoeda2Casas(sugestaoPrecoVenda.breakEvenUnitarioReais, 'BRL')})`
+                              : formatarMoeda2Casas(
+                                  sugestaoPrecoVenda.breakEvenUnitarioReais,
+                                  'BRL',
+                                )}{' '}
+                            / {produtoSelecionado?.unidade || 'unid'}
+                          </span>
+                        </div>
+
+                        <div>
+                          <span className="text-[10px] text-gray-500 block">
+                            Markup Multiplicador:
+                          </span>
+                          <span className="font-mono font-bold text-[#1B5E20]">
+                            {formatarValor2Casas(sugestaoPrecoVenda.markupMultiplicador)}x
+                          </span>
+                        </div>
+
+                        <div>
+                          <span className="text-[10px] text-gray-500 block">
+                            Faturamento Sugerido do Lote:
+                          </span>
+                          <span className="font-mono font-bold text-emerald-950">
+                            {formatarMoeda2Casas(sugestaoPrecoVenda.totalReais, 'BRL')}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={() => {
+                        const novoPreco = Number(sugestaoPrecoVenda.unitarioMoedaVenda.toFixed(2))
+                        setPrecoUnitarioVenda(novoPreco)
+                        toast({
+                          title: 'Preço Sugerido Aplicado',
+                          description: `Preço unitário de venda atualizado para ${formatarMoeda2Casas(
+                            novoPreco,
+                            moedaVenda,
+                          )} (Margem Alvo ${formatarValor2Casas(margemAlvoPerc)}%).`,
+                        })
+                      }}
+                      className="bg-[#1B5E20] hover:bg-[#154a19] text-white font-bold text-xs h-8 px-3 shrink-0 shadow-xs"
+                    >
+                      Aplicar Preço Sugerido na Venda
+                    </Button>
                   </div>
                 </div>
 
@@ -1534,8 +1934,9 @@ export function Simulate() {
                       </p>
                       <p className="text-amber-800 leading-relaxed">
                         O cálculo utilizou a alíquota padrão estimada interestadual de{' '}
-                        <strong>{resultado.icms.aliquotaNominal}%</strong>. Para máxima precisão
-                        fiscal, confira a aba <strong>"Regras Fiscais"</strong>.
+                        <strong>{formatarValor2Casas(resultado.icms.aliquotaNominal)}%</strong>.
+                        Para máxima precisão fiscal, confira a aba <strong>"Regras Fiscais"</strong>
+                        .
                       </p>
                     </div>
                   </div>
@@ -1558,28 +1959,18 @@ export function Simulate() {
                         </Badge>
                       </div>
                       <p className="text-xl font-extrabold text-sky-950 tracking-tight">
-                        {resultado.compra.custoTotalComJuros.toLocaleString('pt-BR', {
-                          style: 'currency',
-                          currency: 'BRL',
-                        })}
+                        {formatarMoeda2Casas(resultado.compra.custoTotalComJuros, 'BRL')}
                       </p>
                       <div className="text-[11px] text-sky-800 flex items-center justify-between pt-0.5">
                         <span>Mercadoria + Despesas:</span>
                         <span className="font-mono font-semibold">
-                          {resultado.compra.custoAquisicaoMercadoria.toLocaleString('pt-BR', {
-                            style: 'currency',
-                            currency: 'BRL',
-                          })}
+                          {formatarMoeda2Casas(resultado.compra.custoAquisicaoMercadoria, 'BRL')}
                         </span>
                       </div>
                       <div className="text-[11px] text-sky-700 flex items-center justify-between">
                         <span>Juros ({resultado.compra.prazoDias}d):</span>
                         <span className="font-mono font-semibold">
-                          +{' '}
-                          {resultado.compra.jurosValor.toLocaleString('pt-BR', {
-                            style: 'currency',
-                            currency: 'BRL',
-                          })}
+                          + {formatarMoeda2Casas(resultado.compra.jurosValor, 'BRL')}
                         </span>
                       </div>
                     </CardContent>
@@ -1598,28 +1989,18 @@ export function Simulate() {
                         </Badge>
                       </div>
                       <p className="text-xl font-extrabold text-[#1B5E20] tracking-tight">
-                        {resultado.venda.faturamentoBrutoTotal.toLocaleString('pt-BR', {
-                          style: 'currency',
-                          currency: 'BRL',
-                        })}
+                        {formatarMoeda2Casas(resultado.venda.faturamentoBrutoTotal, 'BRL')}
                       </p>
                       <div className="text-[11px] text-emerald-800 flex items-center justify-between pt-0.5">
                         <span>Receita Líquida:</span>
                         <span className="font-mono font-semibold">
-                          {resultado.venda.receitaLiquida.toLocaleString('pt-BR', {
-                            style: 'currency',
-                            currency: 'BRL',
-                          })}
+                          {formatarMoeda2Casas(resultado.venda.receitaLiquida, 'BRL')}
                         </span>
                       </div>
                       <div className="text-[11px] text-emerald-700 flex items-center justify-between">
                         <span>Juros Financiados ({resultado.venda.prazoDias}d):</span>
                         <span className="font-mono font-semibold">
-                          +{' '}
-                          {resultado.venda.jurosValor.toLocaleString('pt-BR', {
-                            style: 'currency',
-                            currency: 'BRL',
-                          })}
+                          + {formatarMoeda2Casas(resultado.venda.jurosValor, 'BRL')}
                         </span>
                       </div>
                     </CardContent>
@@ -1633,18 +2014,15 @@ export function Simulate() {
                           Tributos da Venda
                         </span>
                         <Badge className="bg-red-50 text-red-700 border-red-200 text-[10px] font-bold">
-                          {resultado.venda.cargaTributariaEfetivaPerc.toFixed(2)}% efetivo
+                          {formatarValor2Casas(resultado.venda.cargaTributariaEfetivaPerc)}% efetivo
                         </Badge>
                       </div>
                       <p className="text-xl font-extrabold text-red-700 tracking-tight">
-                        {resultado.venda.totalTributos.toLocaleString('pt-BR', {
-                          style: 'currency',
-                          currency: 'BRL',
-                        })}
+                        {formatarMoeda2Casas(resultado.venda.totalTributos, 'BRL')}
                       </p>
                       <p className="text-[11px] text-gray-500">
-                        ICMS R$ {resultado.icms.icmsEfetivoRecolher.toFixed(2)} + PIS/COFINS +
-                        IBS/CBS
+                        ICMS {formatarMoeda2Casas(resultado.icms.icmsEfetivoRecolher, 'BRL')} +
+                        PIS/COFINS + IBS/CBS
                       </p>
                     </CardContent>
                   </Card>
@@ -1658,34 +2036,33 @@ export function Simulate() {
                           Resultado da Operação
                         </span>
                         <Badge className="bg-amber-400/20 text-amber-200 text-[10px] border-amber-400/30 font-bold">
-                          {resultado.resultadoOperacao.margemSobreReceitaBrutaPerc.toFixed(1)}%
-                          Margem
+                          {formatarValor2Casas(
+                            resultado.resultadoOperacao.margemSobreReceitaBrutaPerc,
+                          )}
+                          % Margem
                         </Badge>
                       </div>
                       <p className="text-2xl font-extrabold text-white tracking-tight">
-                        {resultado.resultadoOperacao.resultadoFinalOperacao.toLocaleString(
-                          'pt-BR',
-                          {
-                            style: 'currency',
-                            currency: 'BRL',
-                          },
+                        {formatarMoeda2Casas(
+                          resultado.resultadoOperacao.resultadoFinalOperacao,
+                          'BRL',
                         )}
                       </p>
                       <div className="text-[11px] text-emerald-200 flex items-center justify-between pt-0.5">
                         <span>ROI s/ Compra:</span>
                         <span className="font-mono font-bold text-amber-300">
-                          {resultado.resultadoOperacao.margemSobreCustoInvestidoPerc.toFixed(1)}%
+                          {formatarValor2Casas(
+                            resultado.resultadoOperacao.margemSobreCustoInvestidoPerc,
+                          )}
+                          %
                         </span>
                       </div>
                       <div className="text-[11px] text-emerald-300 flex items-center justify-between">
                         <span>Unitário:</span>
                         <span className="font-mono font-semibold">
-                          {resultado.resultadoOperacao.resultadoFinalUnitario.toLocaleString(
-                            'pt-BR',
-                            {
-                              style: 'currency',
-                              currency: 'BRL',
-                            },
+                          {formatarMoeda2Casas(
+                            resultado.resultadoOperacao.resultadoFinalUnitario,
+                            'BRL',
                           )}{' '}
                           / {resultado.unidade}
                         </span>
@@ -1731,27 +2108,34 @@ export function Simulate() {
                         <span className="font-mono">{resultado.compra.dataVencimento}</span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-gray-100">
+                        <span className="text-gray-600">Moeda da Operação (Compra):</span>
+                        <span className="font-mono font-semibold text-sky-950">
+                          {resultado.compra.moedaOriginal === 'USD'
+                            ? `Dólar (USD) — Taxa R$ ${formatarValor2Casas(resultado.compra.ptaxAplicada)}`
+                            : 'Reais (BRL)'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between py-1 border-b border-gray-100">
                         <span className="text-gray-600">Preço de Aquisição Unitário:</span>
                         <span className="font-mono font-semibold">
-                          {resultado.compra.precoUnitarioReais.toLocaleString('pt-BR', {
-                            style: 'currency',
-                            currency: 'BRL',
-                          })}{' '}
-                          / {resultado.unidade}
+                          {resultado.compra.moedaOriginal === 'USD'
+                            ? `US$ ${formatarValor2Casas(resultado.compra.precoUnitarioOriginal)} (`
+                            : ''}
+                          {formatarMoeda2Casas(resultado.compra.precoUnitarioReais, 'BRL')}
+                          {resultado.compra.moedaOriginal === 'USD' ? ')' : ''} /{' '}
+                          {resultado.unidade}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-gray-100">
                         <span className="text-gray-600">Valor Mercadoria Total:</span>
                         <span className="font-mono font-semibold">
-                          {resultado.compra.valorMercadoriaReais.toLocaleString('pt-BR', {
-                            style: 'currency',
-                            currency: 'BRL',
-                          })}
+                          {formatarMoeda2Casas(resultado.compra.valorMercadoriaReais, 'BRL')}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-gray-100 text-emerald-800 bg-emerald-50/40 px-1 rounded">
                         <span className="flex items-center gap-1">
-                          Crédito ICMS Entrada ({resultado.compra.icmsCreditoAliquota.toFixed(2)}%):
+                          Crédito ICMS Entrada (
+                          {formatarValor2Casas(resultado.compra.icmsCreditoAliquota)}%):
                           {resultado.compra.temRegraIcms ? (
                             <Badge
                               variant="outline"
@@ -1762,10 +2146,7 @@ export function Simulate() {
                           ) : null}
                         </span>
                         <span className="font-mono font-semibold">
-                          {resultado.compra.icmsCreditoValor.toLocaleString('pt-BR', {
-                            style: 'currency',
-                            currency: 'BRL',
-                          })}
+                          {formatarMoeda2Casas(resultado.compra.icmsCreditoValor, 'BRL')}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-gray-100">
@@ -1773,42 +2154,29 @@ export function Simulate() {
                           Despesas Logísticas (Frete {resultado.compra.modalidadeFrete} + Seg.):
                         </span>
                         <span className="font-mono">
-                          {resultado.compra.totalDespesasAcessorias.toLocaleString('pt-BR', {
-                            style: 'currency',
-                            currency: 'BRL',
-                          })}
+                          {formatarMoeda2Casas(resultado.compra.totalDespesasAcessorias, 'BRL')}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-gray-100 bg-sky-50/40 px-1 rounded font-bold text-sky-950">
                         <span>(=) Custo de Aquisição Mercadoria:</span>
                         <span className="font-mono">
-                          {resultado.compra.custoAquisicaoMercadoria.toLocaleString('pt-BR', {
-                            style: 'currency',
-                            currency: 'BRL',
-                          })}
+                          {formatarMoeda2Casas(resultado.compra.custoAquisicaoMercadoria, 'BRL')}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-gray-100 text-sky-800">
                         <span>
                           (+) Custo Financeiro / Juros (
-                          {resultado.compra.taxaJurosEfetivaPerc.toFixed(2)}% em{' '}
+                          {formatarValor2Casas(resultado.compra.taxaJurosEfetivaPerc)}% em{' '}
                           {resultado.compra.prazoDias}d):
                         </span>
                         <span className="font-mono font-semibold">
-                          +{' '}
-                          {resultado.compra.jurosValor.toLocaleString('pt-BR', {
-                            style: 'currency',
-                            currency: 'BRL',
-                          })}
+                          + {formatarMoeda2Casas(resultado.compra.jurosValor, 'BRL')}
                         </span>
                       </div>
                       <div className="flex justify-between py-1.5 font-bold bg-sky-100 text-sky-950 px-2 rounded">
                         <span>CUSTO TOTAL DE AQUISIÇÃO (C/ JUROS):</span>
                         <span className="font-mono">
-                          {resultado.compra.custoTotalComJuros.toLocaleString('pt-BR', {
-                            style: 'currency',
-                            currency: 'BRL',
-                          })}
+                          {formatarMoeda2Casas(resultado.compra.custoTotalComJuros, 'BRL')}
                         </span>
                       </div>
                     </CardContent>
@@ -1841,66 +2209,59 @@ export function Simulate() {
                         <span className="font-mono">{resultado.venda.dataVencimento}</span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-gray-100">
+                        <span className="text-gray-600">Moeda da Operação (Venda):</span>
+                        <span className="font-mono font-semibold text-emerald-950">
+                          {resultado.venda.moedaOriginal === 'USD'
+                            ? `Dólar (USD) — Taxa R$ ${formatarValor2Casas(resultado.venda.ptaxAplicada)}`
+                            : 'Reais (BRL)'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between py-1 border-b border-gray-100">
                         <span className="text-gray-600">Preço de Venda Unitário:</span>
                         <span className="font-mono font-semibold">
-                          {resultado.venda.precoUnitarioReais.toLocaleString('pt-BR', {
-                            style: 'currency',
-                            currency: 'BRL',
-                          })}{' '}
-                          / {resultado.unidade}
+                          {resultado.venda.moedaOriginal === 'USD'
+                            ? `US$ ${formatarValor2Casas(resultado.venda.precoUnitarioOriginal)} (`
+                            : ''}
+                          {formatarMoeda2Casas(resultado.venda.precoUnitarioReais, 'BRL')}
+                          {resultado.venda.moedaOriginal === 'USD' ? ')' : ''} /{' '}
+                          {resultado.unidade}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-gray-100 font-semibold text-emerald-950">
                         <span>Faturamento Bruto Total:</span>
                         <span className="font-mono">
-                          {resultado.venda.faturamentoBrutoTotal.toLocaleString('pt-BR', {
-                            style: 'currency',
-                            currency: 'BRL',
-                          })}
+                          {formatarMoeda2Casas(resultado.venda.faturamentoBrutoTotal, 'BRL')}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-gray-100 text-red-600">
                         <span>(-) Total Tributos da Venda:</span>
                         <span className="font-mono">
-                          -{' '}
-                          {resultado.venda.totalTributos.toLocaleString('pt-BR', {
-                            style: 'currency',
-                            currency: 'BRL',
-                          })}
+                          - {formatarMoeda2Casas(resultado.venda.totalTributos, 'BRL')}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-gray-100 bg-emerald-50/40 px-1 rounded font-bold text-emerald-950">
                         <span>(=) Receita Líquida da Venda:</span>
                         <span className="font-mono">
-                          {resultado.venda.receitaLiquida.toLocaleString('pt-BR', {
-                            style: 'currency',
-                            currency: 'BRL',
-                          })}
+                          {formatarMoeda2Casas(resultado.venda.receitaLiquida, 'BRL')}
                         </span>
                       </div>
                       <div className="flex justify-between py-1 border-b border-gray-100 text-[#1B5E20]">
                         <span>
                           (+) Juros Financiamento Cliente (
-                          {resultado.venda.taxaJurosEfetivaPerc.toFixed(2)}% em{' '}
+                          {formatarValor2Casas(resultado.venda.taxaJurosEfetivaPerc)}% em{' '}
                           {resultado.venda.prazoDias}d):
                         </span>
                         <span className="font-mono font-semibold">
-                          +{' '}
-                          {resultado.venda.jurosValor.toLocaleString('pt-BR', {
-                            style: 'currency',
-                            currency: 'BRL',
-                          })}
+                          + {formatarMoeda2Casas(resultado.venda.jurosValor, 'BRL')}
                         </span>
                       </div>
                       <div className="flex justify-between py-1.5 font-bold bg-emerald-100 text-emerald-950 px-2 rounded">
                         <span>RECEITA LÍQUIDA + JUROS DE VENDA:</span>
                         <span className="font-mono">
-                          {(
-                            resultado.venda.receitaLiquida + resultado.venda.jurosValor
-                          ).toLocaleString('pt-BR', {
-                            style: 'currency',
-                            currency: 'BRL',
-                          })}
+                          {formatarMoeda2Casas(
+                            resultado.venda.receitaLiquida + resultado.venda.jurosValor,
+                            'BRL',
+                          )}
                         </span>
                       </div>
                     </CardContent>
@@ -1921,12 +2282,9 @@ export function Simulate() {
                       </div>
                       <Badge className="bg-amber-400 text-amber-950 font-bold text-xs">
                         Resultado Líquido:{' '}
-                        {resultado.resultadoOperacao.resultadoFinalOperacao.toLocaleString(
-                          'pt-BR',
-                          {
-                            style: 'currency',
-                            currency: 'BRL',
-                          },
+                        {formatarMoeda2Casas(
+                          resultado.resultadoOperacao.resultadoFinalOperacao,
+                          'BRL',
                         )}
                       </Badge>
                     </div>
@@ -1941,38 +2299,32 @@ export function Simulate() {
                         <div className="flex justify-between py-1 border-b border-gray-200">
                           <span className="text-gray-600">Receita Líquida:</span>
                           <span className="font-mono font-medium">
-                            {resultado.venda.receitaLiquida.toLocaleString('pt-BR', {
-                              style: 'currency',
-                              currency: 'BRL',
-                            })}
+                            {formatarMoeda2Casas(resultado.venda.receitaLiquida, 'BRL')}
                           </span>
                         </div>
                         <div className="flex justify-between py-1 border-b border-gray-200 text-red-600">
                           <span>(-) Custo da Mercadoria:</span>
                           <span className="font-mono">
                             -{' '}
-                            {resultado.compra.custoAquisicaoMercadoria.toLocaleString('pt-BR', {
-                              style: 'currency',
-                              currency: 'BRL',
-                            })}
+                            {formatarMoeda2Casas(resultado.compra.custoAquisicaoMercadoria, 'BRL')}
                           </span>
                         </div>
                         <div className="flex justify-between py-1 border-b border-gray-200 text-red-600">
                           <span>(-) Despesas Venda (Frete/Com.):</span>
                           <span className="font-mono">
                             -{' '}
-                            {resultado.resultadoOperacao.despesasOperacionaisVenda.toLocaleString(
-                              'pt-BR',
-                              { style: 'currency', currency: 'BRL' },
+                            {formatarMoeda2Casas(
+                              resultado.resultadoOperacao.despesasOperacionaisVenda,
+                              'BRL',
                             )}
                           </span>
                         </div>
                         <div className="flex justify-between pt-1 font-bold text-gray-900">
                           <span>(=) Margem Operacional:</span>
                           <span className="font-mono">
-                            {resultado.resultadoOperacao.resultadoOperacionalLiquido.toLocaleString(
-                              'pt-BR',
-                              { style: 'currency', currency: 'BRL' },
+                            {formatarMoeda2Casas(
+                              resultado.resultadoOperacao.resultadoOperacionalLiquido,
+                              'BRL',
                             )}
                           </span>
                         </div>
@@ -1986,29 +2338,21 @@ export function Simulate() {
                         <div className="flex justify-between py-1 border-b border-blue-100 text-[#1B5E20]">
                           <span>(+) Juros Recebidos (Venda):</span>
                           <span className="font-mono font-semibold">
-                            +{' '}
-                            {resultado.venda.jurosValor.toLocaleString('pt-BR', {
-                              style: 'currency',
-                              currency: 'BRL',
-                            })}
+                            + {formatarMoeda2Casas(resultado.venda.jurosValor, 'BRL')}
                           </span>
                         </div>
                         <div className="flex justify-between py-1 border-b border-blue-100 text-red-600">
                           <span>(-) Juros Pagos (Compra):</span>
                           <span className="font-mono font-semibold">
-                            -{' '}
-                            {resultado.compra.jurosValor.toLocaleString('pt-BR', {
-                              style: 'currency',
-                              currency: 'BRL',
-                            })}
+                            - {formatarMoeda2Casas(resultado.compra.jurosValor, 'BRL')}
                           </span>
                         </div>
                         <div className="flex justify-between pt-1 font-bold text-blue-950">
                           <span>(=) Resultado Financeiro Líquido:</span>
                           <span className="font-mono">
-                            {resultado.resultadoOperacao.resultadoFinanceiroLiquido.toLocaleString(
-                              'pt-BR',
-                              { style: 'currency', currency: 'BRL' },
+                            {formatarMoeda2Casas(
+                              resultado.resultadoOperacao.resultadoFinanceiroLiquido,
+                              'BRL',
                             )}
                           </span>
                         </div>
@@ -2026,22 +2370,28 @@ export function Simulate() {
                         <div className="flex justify-between py-1 border-b border-emerald-200">
                           <span className="text-emerald-900">Resultado Líquido R$:</span>
                           <span className="font-mono font-extrabold text-base text-[#1B5E20]">
-                            {resultado.resultadoOperacao.resultadoFinalOperacao.toLocaleString(
-                              'pt-BR',
-                              { style: 'currency', currency: 'BRL' },
+                            {formatarMoeda2Casas(
+                              resultado.resultadoOperacao.resultadoFinalOperacao,
+                              'BRL',
                             )}
                           </span>
                         </div>
                         <div className="flex justify-between py-1 border-b border-emerald-200">
                           <span className="text-emerald-900">Margem s/ Faturamento:</span>
                           <span className="font-mono font-bold text-emerald-950">
-                            {resultado.resultadoOperacao.margemSobreReceitaBrutaPerc.toFixed(2)}%
+                            {formatarValor2Casas(
+                              resultado.resultadoOperacao.margemSobreReceitaBrutaPerc,
+                            )}
+                            %
                           </span>
                         </div>
                         <div className="flex justify-between pt-1">
                           <span className="text-emerald-900">ROI s/ Custo Compra:</span>
                           <span className="font-mono font-bold text-emerald-950">
-                            {resultado.resultadoOperacao.margemSobreCustoInvestidoPerc.toFixed(2)}%
+                            {formatarValor2Casas(
+                              resultado.resultadoOperacao.margemSobreCustoInvestidoPerc,
+                            )}
+                            %
                           </span>
                         </div>
                       </div>
@@ -2065,7 +2415,7 @@ export function Simulate() {
                         variant="outline"
                         className="text-xs font-mono text-[#1B5E20] bg-white border-emerald-300"
                       >
-                        Lote: {resultado.volumeTotal.toLocaleString('pt-BR')} {resultado.unidade} (
+                        Lote: {formatarValor2Casas(resultado.volumeTotal)} {resultado.unidade} (
                         {resultado.qtdEmbalagens} emb.)
                       </Badge>
                     </div>
@@ -2111,27 +2461,21 @@ export function Simulate() {
                                   isResultado ? 'text-amber-300 font-bold' : ''
                                 }`}
                               >
-                                {linha.unitario.toLocaleString('pt-BR', {
-                                  style: 'currency',
-                                  currency: 'BRL',
-                                })}
+                                {formatarMoeda2Casas(linha.unitario, 'BRL')}
                               </td>
                               <td
                                 className={`py-2.5 px-4 text-right font-mono font-bold ${
                                   isResultado ? 'text-amber-300 text-sm' : ''
                                 }`}
                               >
-                                {linha.total.toLocaleString('pt-BR', {
-                                  style: 'currency',
-                                  currency: 'BRL',
-                                })}
+                                {formatarMoeda2Casas(linha.total, 'BRL')}
                               </td>
                               <td
                                 className={`py-2.5 px-4 text-right font-mono font-semibold ${
                                   isResultado ? 'text-white' : 'text-gray-600'
                                 }`}
                               >
-                                {linha.percSobreFaturamento.toFixed(2)}%
+                                {formatarValor2Casas(linha.percSobreFaturamento)}%
                               </td>
                             </tr>
                           )
@@ -2147,10 +2491,7 @@ export function Simulate() {
                         Preço Mínimo (Break-Even)
                       </span>
                       <span className="text-base font-mono font-bold text-gray-900 block mt-1">
-                        {resultado.precoMinimoBreakEven.toLocaleString('pt-BR', {
-                          style: 'currency',
-                          currency: 'BRL',
-                        })}
+                        {formatarMoeda2Casas(resultado.precoMinimoBreakEven, 'BRL')}
                       </span>
                       <span className="text-[10px] text-gray-500 block mt-0.5">
                         Ponto de equilíbrio (Margem Zero)
@@ -2162,7 +2503,7 @@ export function Simulate() {
                         Markup Multiplicador
                       </span>
                       <span className="text-base font-mono font-bold text-[#1B5E20] block mt-1">
-                        {resultado.markupMultiplicador.toFixed(3)}x
+                        {formatarValor2Casas(resultado.markupMultiplicador)}x
                       </span>
                       <span className="text-[10px] text-gray-500 block mt-0.5">
                         Fator multiplicador sobre o custo
@@ -2171,20 +2512,13 @@ export function Simulate() {
 
                     <div className="p-3 bg-gradient-to-br from-emerald-100/70 to-emerald-50 rounded-lg border border-emerald-300">
                       <span className="text-[10px] uppercase font-bold text-emerald-950 block">
-                        Preço Sugerido (Margem {margemAlvoPerc}%)
+                        Preço Sugerido (Margem {formatarValor2Casas(margemAlvoPerc)}%)
                       </span>
                       <span className="text-base font-mono font-extrabold text-[#1B5E20] block mt-1">
-                        {resultado.precoVendaSugerido.toLocaleString('pt-BR', {
-                          style: 'currency',
-                          currency: 'BRL',
-                        })}
+                        {formatarMoeda2Casas(resultado.precoVendaSugerido, 'BRL')}
                       </span>
                       <span className="text-[10px] text-emerald-800 block mt-0.5 font-medium">
-                        Unitário:{' '}
-                        {resultado.precoVendaSugeridoUnitario.toLocaleString('pt-BR', {
-                          style: 'currency',
-                          currency: 'BRL',
-                        })}{' '}
+                        Unitário: {formatarMoeda2Casas(resultado.precoVendaSugeridoUnitario, 'BRL')}{' '}
                         / {resultado.unidade}
                       </span>
                     </div>

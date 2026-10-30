@@ -524,30 +524,58 @@ export function calcularTaxaJurosProporcional(
 }
 
 /**
- * Tenta extrair a capacidade numérica da embalagem (ex: "4X5L" -> 20L, "Saco 20 kg" -> 20, "Bombona 20 L" -> 20)
+ * Formata valor numérico sempre com 2 casas decimais depois da vírgula (padrão pt-BR: 0,00)
  */
-export function deduzirCapacidadeEmbalagem(textoEmbalagem?: string): number {
-  if (!textoEmbalagem) return 1
-  const t = textoEmbalagem.trim().toUpperCase()
+const fmt2 = (val: number): string =>
+  (Number(val) || 0).toLocaleString('pt-BR', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
 
-  // Formato multix: 4X5L -> 20, 2X10L -> 20, 12X1L -> 12, 1X20L -> 20
-  const multiMatch = t.match(/(\d+)\s*[X*]\s*([\d,.]+)/)
-  if (multiMatch) {
-    const qtd = parseFloat(multiMatch[1])
-    const vol = parseFloat(multiMatch[2].replace(',', '.'))
-    if (!isNaN(qtd) && !isNaN(vol) && qtd > 0 && vol > 0) {
-      return qtd * vol
+/**
+ * Extrai automaticamente a capacidade numérica (múltiplo) da embalagem a partir do cadastro do produto
+ * (ex: "4X5L" -> 20, "4x5KG" -> 20, "10x0,240KG" -> 2.4, "1x20L" -> 20, "Bombona 20 L" -> 20)
+ */
+export function deduzirCapacidadeEmbalagem(
+  textoEmbalagem?: string,
+  descricaoProduto?: string,
+): number {
+  const extrairDeTexto = (texto?: string, permitirNumeroPuro = false): number | null => {
+    if (!texto) return null
+    const t = texto.trim().toUpperCase()
+    if (!t || t === 'PADRAO' || t === 'PADRÃO' || t === 'N/I') return null
+
+    // 1. Formato múltiplo composto: 4X5L -> 20, 4X5KG -> 20, 10X0,240KG -> 2.4, 1X20L -> 20
+    const multiMatch = t.match(/(\d+)\s*[X*]\s*([\d,.]+)/)
+    if (multiMatch) {
+      const qtd = parseFloat(multiMatch[1])
+      const vol = parseFloat(multiMatch[2].replace(',', '.'))
+      if (!isNaN(qtd) && !isNaN(vol) && qtd > 0 && vol > 0) {
+        return Number((qtd * vol).toFixed(2))
+      }
     }
+
+    // 2. Formato direto com unidade: 20L, 200L, 20 KG, 1000L, 25SC
+    const numMatch = t.match(/([\d,.]+)\s*(L|LT|LTS|KG|KGS|G|GR|ML|SC|UN|DOSES|KDS)\b/)
+    if (numMatch) {
+      const v = parseFloat(numMatch[1].replace(',', '.'))
+      if (!isNaN(v) && v > 0) return Number(v.toFixed(2))
+    }
+
+    // 3. Caso o campo embalagem contenha apenas o número do múltiplo (ex: "20")
+    if (permitirNumeroPuro && /^[\d,.]+$/.test(t)) {
+      const v = parseFloat(t.replace(',', '.'))
+      if (!isNaN(v) && v > 0) return Number(v.toFixed(2))
+    }
+
+    return null
   }
 
-  // Formato direto: 20L, 200L, 20 KG, 1000L
-  const numMatch = t.match(/([\d,.]+)\s*(L|KG|G|ML|SC|UN)/)
-  if (numMatch) {
-    const v = parseFloat(numMatch[1].replace(',', '.'))
-    if (!isNaN(v) && v > 0) return v
-  }
-
-  return 1
+  return (
+    extrairDeTexto(textoEmbalagem, true) ??
+    extrairDeTexto(descricaoProduto, false) ??
+    1
+  )
 }
 
 // -----------------------------------------------------------------------------
@@ -573,7 +601,7 @@ export function executarCalculoSimulador(input: SimuladorInput): SimuladorResult
   const volumePorEmb =
     input.volumePorEmbalagem !== undefined && input.volumePorEmbalagem > 0
       ? input.volumePorEmbalagem
-      : deduzirCapacidadeEmbalagem(emb)
+      : deduzirCapacidadeEmbalagem(emb, desc)
 
   let qtdEmbalagens = input.qtdEmbalagens || 0
   let volumeTotal = qtdInformada
@@ -622,13 +650,13 @@ export function executarCalculoSimulador(input: SimuladorInput): SimuladorResult
         ? Number(produto.preco_base_sugerido)
         : Number(input.precoUnitario) || 0
 
-  const moedaCompra = compraIn.moeda || (produto.moeda?.toUpperCase() === 'USD' ? 'USD' : 'BRL')
+  const moedaCompra: 'BRL' | 'USD' = compraIn.moeda === 'USD' ? 'USD' : 'BRL'
   const isCompraImportada =
-    moedaCompra === 'USD' ||
-    produto.origem?.toLowerCase().includes('imp') ||
-    desc.toUpperCase().includes('(IMP)')
+    produto.origem?.toLowerCase().includes('imp') || desc.toUpperCase().includes('(IMP)')
   const ptaxCompra =
-    compraIn.ptaxManual || (isCompraImportada ? Number(input.ptaxManual) || 1.0 : 1.0)
+    moedaCompra === 'USD'
+      ? Math.max(0.0001, Number(compraIn.ptaxManual || input.ptaxManual) || 1.0)
+      : 1.0
   const precoUnitarioCompraReais =
     moedaCompra === 'USD' ? precoUnitarioCompra * ptaxCompra : precoUnitarioCompra
 
@@ -801,12 +829,13 @@ export function executarCalculoSimulador(input: SimuladorInput): SimuladorResult
         ? Number(input.precoUnitario)
         : precoUnitarioCompraReais * 1.15
 
-  const moedaVenda = vendaIn.moeda || input.moeda || 'BRL'
+  const moedaVenda: 'BRL' | 'USD' = (vendaIn.moeda || input.moeda) === 'USD' ? 'USD' : 'BRL'
   const isVendaImportada =
-    moedaVenda === 'USD' ||
-    produto.origem?.toLowerCase().includes('imp') ||
-    desc.toUpperCase().includes('(IMP)')
-  const ptaxVenda = vendaIn.ptaxManual || (isVendaImportada ? Number(input.ptaxManual) || 1.0 : 1.0)
+    produto.origem?.toLowerCase().includes('imp') || desc.toUpperCase().includes('(IMP)')
+  const ptaxVenda =
+    moedaVenda === 'USD'
+      ? Math.max(0.0001, Number(vendaIn.ptaxManual || input.ptaxManual) || 1.0)
+      : 1.0
   const precoUnitarioVendaReais =
     moedaVenda === 'USD' ? precoUnitarioVenda * ptaxVenda : precoUnitarioVenda
 
@@ -982,9 +1011,9 @@ export function executarCalculoSimulador(input: SimuladorInput): SimuladorResult
     icmsEfetivoRecolher,
     fundamentacao: fundamentacaoLegal,
     observacoes: diferimento
-      ? `Diferimento de ${percDif}% aplicado`
+      ? `Diferimento de ${fmt2(percDif)}% aplicado`
       : redBasePerc > 0
-        ? `Redução de base de ${redBasePerc}%`
+        ? `Redução de base de ${fmt2(redBasePerc)}%`
         : 'Tributação normal',
   }
 
@@ -1023,7 +1052,7 @@ export function executarCalculoSimulador(input: SimuladorInput): SimuladorResult
     aliquotaEfetiva: aliqPisPadrao,
     valorImposto: valorPis,
     fundamentacao: considerarReoneracao
-      ? 'LC 224/2025: reoneração linear de 10% do PIS (0,165% no Lucro Real pós-Abr/2026)'
+      ? 'LC 224/2025: reoneração linear de 10,00% do PIS (0,17% no Lucro Real pós-Abr/2026)'
       : 'Lei 10.925/2004: benefício de alíquota zero para insumos agropecuários',
     observacoes: 'Base com exclusão do ICMS destacado (Tema 69 STF)',
   }
@@ -1035,7 +1064,7 @@ export function executarCalculoSimulador(input: SimuladorInput): SimuladorResult
     aliquotaEfetiva: aliqCofinsPadrao,
     valorImposto: valorCofins,
     fundamentacao: considerarReoneracao
-      ? 'LC 224/2025: reoneração linear de 10% da COFINS (0,760% no Lucro Real pós-Abr/2026)'
+      ? 'LC 224/2025: reoneração linear de 10,00% da COFINS (0,76% no Lucro Real pós-Abr/2026)'
       : 'Lei 10.925/2004: benefício de alíquota zero para insumos agropecuários',
     observacoes: 'Base com exclusão do ICMS destacado (Tema 69 STF)',
   }
@@ -1073,8 +1102,8 @@ export function executarCalculoSimulador(input: SimuladorInput): SimuladorResult
     aliquotaEfetiva: aliqIbsEfetiva,
     reducaoBasePerc: reducaoReformaPerc,
     valorImposto: valorIbs,
-    fundamentacao: 'LC 214/2025 Art. 138 e Anexo IX (Redução de 60% para insumos agropecuários)',
-    observacoes: `Nominal ${aliqIbsNominal}% reduzida em 60% → Efetiva ${aliqIbsEfetiva.toFixed(3)}%`,
+    fundamentacao: 'LC 214/2025 Art. 138 e Anexo IX (Redução de 60,00% para insumos agropecuários)',
+    observacoes: `Nominal ${fmt2(aliqIbsNominal)}% reduzida em 60,00% → Efetiva ${fmt2(aliqIbsEfetiva)}%`,
   }
 
   const cbsDetalhe: DetalhamentoTributo = {
@@ -1084,8 +1113,8 @@ export function executarCalculoSimulador(input: SimuladorInput): SimuladorResult
     aliquotaEfetiva: aliqCbsEfetiva,
     reducaoBasePerc: reducaoReformaPerc,
     valorImposto: valorCbs,
-    fundamentacao: 'LC 214/2025 Art. 138 e Anexo IX (Redução de 60% para insumos agropecuários)',
-    observacoes: `Nominal ${aliqCbsNominal}% reduzida em 60% → Efetiva ${aliqCbsEfetiva.toFixed(3)}%`,
+    fundamentacao: 'LC 214/2025 Art. 138 e Anexo IX (Redução de 60,00% para insumos agropecuários)',
+    observacoes: `Nominal ${fmt2(aliqCbsNominal)}% reduzida em 60,00% → Efetiva ${fmt2(aliqCbsEfetiva)}%`,
   }
 
   const totalTributosVenda = icmsEfetivoRecolher + valorPis + valorCofins + valorIbs + valorCbs
@@ -1312,7 +1341,7 @@ export function executarCalculoSimulador(input: SimuladorInput): SimuladorResult
       natureza: 'despesa',
     },
     {
-      descricao: `(-) Comissão de Venda (${comissaoPerc.toFixed(1)}%)`,
+      descricao: `(-) Comissão de Venda (${fmt2(comissaoPerc)}%)`,
       unitario: volumeTotal > 0 ? comissaoValor / volumeTotal : 0,
       total: comissaoValor,
       percSobreFaturamento: comissaoPerc,
@@ -1327,7 +1356,7 @@ export function executarCalculoSimulador(input: SimuladorInput): SimuladorResult
       natureza: 'subtotal',
     },
     {
-      descricao: `(-) Juros da Compra (${taxaEfetivaCompraPerc.toFixed(2)}% em ${prazoCompraDias}d)`,
+      descricao: `(-) Juros da Compra (${fmt2(taxaEfetivaCompraPerc)}% em ${prazoCompraDias}d)`,
       unitario: volumeTotal > 0 ? jurosCompraValor / volumeTotal : 0,
       total: jurosCompraValor,
       percSobreFaturamento:
@@ -1335,7 +1364,7 @@ export function executarCalculoSimulador(input: SimuladorInput): SimuladorResult
       natureza: 'despesa',
     },
     {
-      descricao: `(+) Juros Financiamento da Venda (${taxaEfetivaVendaPerc.toFixed(2)}% em ${prazoVendaDias}d)`,
+      descricao: `(+) Juros Financiamento da Venda (${fmt2(taxaEfetivaVendaPerc)}% em ${prazoVendaDias}d)`,
       unitario: volumeTotal > 0 ? jurosVendaValor / volumeTotal : 0,
       total: jurosVendaValor,
       percSobreFaturamento: receitaBrutaVenda > 0 ? (jurosVendaValor / receitaBrutaVenda) * 100 : 0,
@@ -1355,49 +1384,49 @@ export function executarCalculoSimulador(input: SimuladorInput): SimuladorResult
     `[BLOCO COMPRA] Operação de Aquisição (${dataCompraIso} | Vencimento ${dataVencimentoCompraIso} em ${prazoCompraDias} dias | Rota: ${ufOrigemCompra} → ${ufDestinoCompra})`,
   )
   memoriaCalculo.push(
-    `Custo de Aquisição Mercadoria: ${volumeTotal.toLocaleString('pt-BR')} ${unid} × ${moedaCompra === 'USD' ? `US$ ${precoUnitarioCompra.toFixed(2)} (PTAX R$ ${ptaxCompra.toFixed(4)}) = ` : ''}R$ ${precoUnitarioCompraReais.toFixed(2)} = R$ ${valorMercadoriaCompraReais.toFixed(2)}`,
+    `Custo de Aquisição Mercadoria: ${fmt2(volumeTotal)} ${unid} × ${moedaCompra === 'USD' ? `US$ ${fmt2(precoUnitarioCompra)} (Taxa R$ ${fmt2(ptaxCompra)}) = ` : ''}R$ ${fmt2(precoUnitarioCompraReais)} = R$ ${fmt2(valorMercadoriaCompraReais)}`,
   )
   memoriaCalculo.push(
-    `Despesas de Aquisição: Frete (${modalidadeFreteCompra}) R$ ${freteCompraReais.toFixed(2)} + Seguro R$ ${seguroCompra.toFixed(2)} + Outras Despesas R$ ${outrasDespesasCompra.toFixed(2)} = R$ ${totalDespesasCompra.toFixed(2)}`,
+    `Despesas de Aquisição: Frete (${modalidadeFreteCompra}) R$ ${fmt2(freteCompraReais)} + Seguro R$ ${fmt2(seguroCompra)} + Outras Despesas R$ ${fmt2(outrasDespesasCompra)} = R$ ${fmt2(totalDespesasCompra)}`,
   )
   memoriaCalculo.push(
-    `Crédito ICMS Entrada (${ufOrigemCompra} → ${ufDestinoCompra}): Alíquota Regra Fiscal ${icmsCreditoAliq.toFixed(2)}% sobre Base R$ ${baseCreditoIcms.toFixed(2)} = Crédito ICMS R$ ${icmsCreditoValor.toFixed(2)} (Total Créditos Tributários: R$ ${totalCreditosTributarios.toFixed(2)})`,
+    `Crédito ICMS Entrada (${ufOrigemCompra} → ${ufDestinoCompra}): Alíquota Regra Fiscal ${fmt2(icmsCreditoAliq)}% sobre Base R$ ${fmt2(baseCreditoIcms)} = Crédito ICMS R$ ${fmt2(icmsCreditoValor)} (Total Créditos Tributários: R$ ${fmt2(totalCreditosTributarios)})`,
   )
   memoriaCalculo.push(
-    `Custo Total de Compra: Mercadoria R$ ${custoAquisicaoMercadoria.toFixed(2)} | Juros Financiamento Compra (${taxaJurosCompraMensal.toFixed(2)}% a.m. / pró-rata ${taxaEfetivaCompraPerc.toFixed(2)}% em ${prazoCompraDias}d) = R$ ${jurosCompraValor.toFixed(2)} | Custo Total com Juros: R$ ${custoTotalCompraComJuros.toFixed(2)} (R$ ${custoUnitarioTotalCompra.toFixed(2)}/${unid})`,
+    `Custo Total de Compra: Mercadoria R$ ${fmt2(custoAquisicaoMercadoria)} | Juros Financiamento Compra (${fmt2(taxaJurosCompraMensal)}% a.m. / pró-rata ${fmt2(taxaEfetivaCompraPerc)}% em ${prazoCompraDias}d) = R$ ${fmt2(jurosCompraValor)} | Custo Total com Juros: R$ ${fmt2(custoTotalCompraComJuros)} (R$ ${fmt2(custoUnitarioTotalCompra)}/${unid})`,
   )
 
   memoriaCalculo.push(
-    `[BLOCO VENDA] Operação de Revenda Comercial (${dataVendaIso} | Vencimento ${dataVencimentoVendaIso} em ${prazoVendaDias} dias | Rota: ${ufOrigemVenda} → ${ufDestinoVenda})`,
+    `[BLOCO VENDA] Operação de Revenda Comercial (${dataVendaIso} | Vencimento ${dataVencimentoVendaIso} em ${prazoVendaDias} dias | Moeda: ${moedaVenda}${moedaVenda === 'USD' ? ` (Taxa US$ 1,00 = R$ ${fmt2(ptaxVenda)})` : ''} | Rota: ${ufOrigemVenda} → ${ufDestinoVenda})`,
   )
   memoriaCalculo.push(
-    `Receita Bruta da Venda: R$ ${precoUnitarioVendaReais.toFixed(2)}/${unid} | Faturamento Total: R$ ${receitaBrutaVenda.toFixed(2)} | Frete Venda (${modalidadeFreteVenda}): R$ ${freteVendaReais.toFixed(2)} | Seguro/Outros: R$ ${(seguroVenda + outrasDespesasVenda).toFixed(2)} | Comissão (${comissaoPerc}%): R$ ${comissaoValor.toFixed(2)}`,
+    `Receita Bruta da Venda: ${moedaVenda === 'USD' ? `US$ ${fmt2(precoUnitarioVenda)} (Taxa R$ ${fmt2(ptaxVenda)}) = ` : ''}R$ ${fmt2(precoUnitarioVendaReais)}/${unid} | Faturamento Total: R$ ${fmt2(receitaBrutaVenda)} | Frete Venda (${modalidadeFreteVenda}): R$ ${fmt2(freteVendaReais)} | Seguro/Outros: R$ ${fmt2(seguroVenda + outrasDespesasVenda)} | Comissão (${fmt2(comissaoPerc)}%): R$ ${fmt2(comissaoValor)}`,
   )
   memoriaCalculo.push(
-    `ICMS Saída (${ufOrigemVenda} → ${ufDestinoVenda}): Base Bruta R$ ${baseCalculoBrutaIcmsVenda.toFixed(2)} | Redução ${redBasePerc}% → Base Efetiva R$ ${baseCalculoEfetivaIcms.toFixed(2)} | Alíquota ${aliqNominal}% | Débito R$ ${debitoIcms.toFixed(2)} | Diferimento R$ ${valorDiferimento.toFixed(2)} | ICMS Efetivo a Recolher: R$ ${icmsEfetivoRecolher.toFixed(2)}`,
+    `ICMS Saída (${ufOrigemVenda} → ${ufDestinoVenda}): Base Bruta R$ ${fmt2(baseCalculoBrutaIcmsVenda)} | Redução ${fmt2(redBasePerc)}% → Base Efetiva R$ ${fmt2(baseCalculoEfetivaIcms)} | Alíquota ${fmt2(aliqNominal)}% | Débito R$ ${fmt2(debitoIcms)} | Diferimento R$ ${fmt2(valorDiferimento)} | ICMS Efetivo a Recolher: R$ ${fmt2(icmsEfetivoRecolher)}`,
   )
   memoriaCalculo.push(
-    `PIS/COFINS (Tema 69 STF - Exclusão ICMS): Base R$ ${basePisCofinsComExclusaoStf.toFixed(2)} | PIS ${aliqPisPadrao.toFixed(3)}% (R$ ${valorPis.toFixed(2)}) + COFINS ${aliqCofinsPadrao.toFixed(3)}% (R$ ${valorCofins.toFixed(2)})`,
+    `PIS/COFINS (Tema 69 STF - Exclusão ICMS): Base R$ ${fmt2(basePisCofinsComExclusaoStf)} | PIS ${fmt2(aliqPisPadrao)}% (R$ ${fmt2(valorPis)}) + COFINS ${fmt2(aliqCofinsPadrao)}% (R$ ${fmt2(valorCofins)})`,
   )
   memoriaCalculo.push(
-    `IBS/CBS (Transição 2026 LC 214/2025 c/ Redução 60%): Base R$ ${baseCalculoIbsCbs.toFixed(2)} | IBS ${aliqIbsNominal}% reduzido 60% (efetivo ${aliqIbsEfetiva.toFixed(3)}% = R$ ${valorIbs.toFixed(2)}) + CBS ${aliqCbsNominal}% reduzido 60% (efetivo ${aliqCbsEfetiva.toFixed(3)}% = R$ ${valorCbs.toFixed(2)}) | Carga Tributária Total da Venda: R$ ${totalTributosVenda.toFixed(2)} (${cargaTributariaEfetivaPerc.toFixed(2)}%)`,
+    `IBS/CBS (Transição 2026 LC 214/2025 c/ Redução 60,00%): Base R$ ${fmt2(baseCalculoIbsCbs)} | IBS ${fmt2(aliqIbsNominal)}% reduzido 60,00% (efetivo ${fmt2(aliqIbsEfetiva)}% = R$ ${fmt2(valorIbs)}) + CBS ${fmt2(aliqCbsNominal)}% reduzido 60,00% (efetivo ${fmt2(aliqCbsEfetiva)}% = R$ ${fmt2(valorCbs)}) | Carga Tributária Total da Venda: R$ ${fmt2(totalTributosVenda)} (${fmt2(cargaTributariaEfetivaPerc)}%)`,
   )
   memoriaCalculo.push(
-    `Juros Financiamento Concedido ao Cliente: Taxa ${taxaJurosVendaMensal.toFixed(2)}% a.m. (efetiva ${taxaEfetivaVendaPerc.toFixed(2)}% em ${prazoVendaDias}d) = R$ ${jurosVendaValor.toFixed(2)}`,
+    `Juros Financiamento Concedido ao Cliente: Taxa ${fmt2(taxaJurosVendaMensal)}% a.m. (efetiva ${fmt2(taxaEfetivaVendaPerc)}% em ${prazoVendaDias}d) = R$ ${fmt2(jurosVendaValor)}`,
   )
 
   memoriaCalculo.push(`[BLOCO RESULTADO CONSOLIDADO] DRE e Indicadores da Operação`)
   memoriaCalculo.push(
-    `Faturamento Bruto R$ ${receitaBrutaVenda.toFixed(2)} (-) Deduções Tributárias R$ ${totalTributosVenda.toFixed(2)} (=) Receita Líquida R$ ${receitaLiquidaVenda.toFixed(2)}`,
+    `Faturamento Bruto R$ ${fmt2(receitaBrutaVenda)} (-) Deduções Tributárias R$ ${fmt2(totalTributosVenda)} (=) Receita Líquida R$ ${fmt2(receitaLiquidaVenda)}`,
   )
   memoriaCalculo.push(
-    `Receita Líquida R$ ${receitaLiquidaVenda.toFixed(2)} (-) Custo Aquisição Mercadoria R$ ${custoAquisicaoBase.toFixed(2)} (-) Despesas Operacionais Venda R$ ${despesasOperacionaisVenda.toFixed(2)} (=) Margem Operacional R$ ${margemContribuicaoOperacional.toFixed(2)}`,
+    `Receita Líquida R$ ${fmt2(receitaLiquidaVenda)} (-) Custo Aquisição Mercadoria R$ ${fmt2(custoAquisicaoBase)} (-) Despesas Operacionais Venda R$ ${fmt2(despesasOperacionaisVenda)} (=) Margem Operacional R$ ${fmt2(margemContribuicaoOperacional)}`,
   )
   memoriaCalculo.push(
-    `Resultado Financeiro: Juros Venda (+) R$ ${jurosVendaValor.toFixed(2)} (-) Juros Compra (-) R$ ${jurosCompraValor.toFixed(2)} (=) Saldo Financeiro R$ ${resultadoFinanceiroLiquido.toFixed(2)}`,
+    `Resultado Financeiro: Juros Venda (+) R$ ${fmt2(jurosVendaValor)} (-) Juros Compra (-) R$ ${fmt2(jurosCompraValor)} (=) Saldo Financeiro R$ ${fmt2(resultadoFinanceiroLiquido)}`,
   )
   memoriaCalculo.push(
-    `RESULTADO FINAL DA OPERAÇÃO: R$ ${resultadoFinalOperacao.toFixed(2)} (${margemSobreReceitaBrutaPerc.toFixed(2)}% da venda | ${margemSobreCustoInvestidoPerc.toFixed(2)}% ROI sobre compra) | Break-Even: R$ ${precoMinimoBreakEven.toFixed(2)} | Markup Multiplicador: ${markupMultiplicador.toFixed(3)}x | Preço Sugerido (Margem ${margemAlvoPerc}%): R$ ${precoVendaSugerido.toFixed(2)} (R$ ${precoVendaSugeridoUnitario.toFixed(2)}/${unid})`,
+    `RESULTADO FINAL DA OPERAÇÃO: R$ ${fmt2(resultadoFinalOperacao)} (${fmt2(margemSobreReceitaBrutaPerc)}% da venda | ${fmt2(margemSobreCustoInvestidoPerc)}% ROI sobre compra) | Break-Even: R$ ${fmt2(precoMinimoBreakEven)} | Markup Multiplicador: ${fmt2(markupMultiplicador)}x | Preço Sugerido (Margem ${fmt2(margemAlvoPerc)}%): R$ ${fmt2(precoVendaSugerido)} (R$ ${fmt2(precoVendaSugeridoUnitario)}/${unid})`,
   )
 
   return {

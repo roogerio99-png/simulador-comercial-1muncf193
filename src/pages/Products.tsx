@@ -138,7 +138,7 @@ export function Products() {
         const filters: string[] = []
         if (termo) {
           filters.push(
-            `descricao ~ '${termo}' || codigo ~ '${termo}' || ncm ~ '${termo}' || principio_ativo ~ '${termo}' || fabricante ~ '${termo}'`,
+            `(descricao ~ '${termo}' || codigo ~ '${termo}' || ncm ~ '${termo}' || principio_ativo ~ '${termo}' || fabricante ~ '${termo}')`,
           )
         }
         if (origemFiltro !== 'todos') {
@@ -171,7 +171,7 @@ export function Products() {
         const filters: string[] = []
         if (termo) {
           filters.push(
-            `nome_produto ~ '${termo}' || marca_padronizada ~ '${termo}' || registro_mapa ~ '${termo}' || ncm ~ '${termo}' || principio_ativo ~ '${termo}'`,
+            `(nome_produto ~ '${termo}' || marca_padronizada ~ '${termo}' || registro_mapa ~ '${termo}' || ncm ~ '${termo}' || principio_ativo ~ '${termo}')`,
           )
         }
         if (statusMestre !== 'todos') {
@@ -414,7 +414,12 @@ export function Products() {
 
   const formatBRL = (val?: number) => {
     if (val === undefined || val === null || isNaN(val)) return '—'
-    return val.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+    return val.toLocaleString('pt-BR', {
+      style: 'currency',
+      currency: 'BRL',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })
   }
 
   return (
