@@ -89,6 +89,14 @@ export const simuladorDataService = {
     }
   },
 
+  async listarTodosProdutosBaseSimulador(sort = 'descricao'): Promise<SimProdutoBase[]> {
+    return pb.collection('simulador_produtos').getFullList<SimProdutoBase>({
+      sort,
+      batch: 500,
+      requestKey: null,
+    })
+  },
+
   async listarRegrasIcmsSimulador(options: {
     page?: number
     perPage?: number

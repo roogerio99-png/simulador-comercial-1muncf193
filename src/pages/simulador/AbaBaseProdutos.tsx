@@ -168,6 +168,8 @@ export function AbaBaseProdutos({ ativa }: AbaBaseProdutosProps) {
       return valor.toLocaleString('pt-BR', {
         style: 'currency',
         currency: moeda === 'USD' ? 'USD' : 'BRL',
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
       })
     } catch {
       return `R$ ${valor.toFixed(2).replace('.', ',')}`
@@ -187,12 +189,18 @@ export function AbaBaseProdutos({ ativa }: AbaBaseProdutosProps) {
 
     const precoFormatado =
       prod.preco_base_sugerido !== undefined && prod.preco_base_sugerido !== null
-        ? String(prod.preco_base_sugerido).replace('.', ',')
+        ? Number(prod.preco_base_sugerido).toLocaleString('pt-BR', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          })
         : '0,00'
 
     const comissaoFormatada =
       prod.comissao_padrao !== undefined && prod.comissao_padrao !== null
-        ? String(prod.comissao_padrao).replace('.', ',')
+        ? Number(prod.comissao_padrao).toLocaleString('pt-BR', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          })
         : ''
 
     setItemEditando({
@@ -556,7 +564,14 @@ export function AbaBaseProdutos({ ativa }: AbaBaseProdutosProps) {
                         prod.comissao_padrao !== null &&
                         prod.comissao_padrao > 0 ? (
                           <span className="font-semibold">
-                            {(prod.comissao_padrao * 100).toFixed(1).replace('.', ',')}%
+                            {(prod.comissao_padrao < 1
+                              ? prod.comissao_padrao * 100
+                              : prod.comissao_padrao
+                            ).toLocaleString('pt-BR', {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })}
+                            %
                           </span>
                         ) : (
                           <span className="text-gray-400">—</span>

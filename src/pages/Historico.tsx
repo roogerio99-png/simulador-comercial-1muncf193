@@ -12,6 +12,7 @@ import {
   Search,
 } from 'lucide-react'
 import { simulacoesStorage } from '@/lib/simulacoesStorage'
+import { formatarValor2Casas } from '@/lib/utils'
 import { useToast } from '@/hooks/use-toast'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -48,7 +49,12 @@ export function Historico() {
   }, [])
 
   const formatBRL = (val: number) => {
-    return val.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+    return (Number.isFinite(val) ? val : 0).toLocaleString('pt-BR', {
+      style: 'currency',
+      currency: 'BRL',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })
   }
 
   const formatData = (iso: string) => {
@@ -235,7 +241,9 @@ export function Historico() {
                       </div>
                       <div>
                         <span className="text-[10px] text-[#5D6B63] uppercase">Volume</span>
-                        <p className="font-semibold text-[#1E2A24]">{s.quantidade} unidades</p>
+                        <p className="font-semibold text-[#1E2A24]">
+                          {formatarValor2Casas(s.quantidade)} unidades
+                        </p>
                       </div>
                       <div>
                         <span className="text-[10px] text-[#5D6B63] uppercase">Preço Unitário</span>
@@ -268,7 +276,7 @@ export function Historico() {
                           </div>
                           <div>
                             <span className="text-slate-500 text-[11px]">
-                              Margem ({s.margemLucroPerc}%):
+                              Margem ({formatarValor2Casas(s.margemLucroPerc)}%):
                             </span>
                             <p className="font-medium">{formatBRL(s.valorMargemTotal)}</p>
                           </div>
@@ -278,7 +286,7 @@ export function Historico() {
                           </div>
                           <div>
                             <span className="text-slate-500 text-[11px]">
-                              ICMS ({s.aliquotaIcms}%):
+                              ICMS ({formatarValor2Casas(s.aliquotaIcms)}%):
                             </span>
                             <p className="font-semibold text-amber-900">
                               {formatBRL(s.valorIcmsTotal)}
@@ -286,13 +294,13 @@ export function Historico() {
                           </div>
                           <div>
                             <span className="text-slate-500 text-[11px]">
-                              PIS ({s.aliquotaPis}%):
+                              PIS ({formatarValor2Casas(s.aliquotaPis)}%):
                             </span>
                             <p className="font-medium">{formatBRL(s.valorPisTotal)}</p>
                           </div>
                           <div>
                             <span className="text-slate-500 text-[11px]">
-                              COFINS ({s.aliquotaCofins}%):
+                              COFINS ({formatarValor2Casas(s.aliquotaCofins)}%):
                             </span>
                             <p className="font-medium">{formatBRL(s.valorCofinsTotal)}</p>
                           </div>

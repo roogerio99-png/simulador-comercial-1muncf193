@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { simuladorDataService } from '@/services/simuladorDataService'
 import { simuladorImportadorService } from '@/services/simuladorImportadorService'
+import { formatarValor2Casas } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
 import { useToast } from '@/hooks/use-toast'
 import { Card, CardContent } from '@/components/ui/card'
@@ -733,15 +734,15 @@ export function Regras() {
                             {r.uf_origem} → {r.uf_destino}
                           </td>
                           <td className="py-2.5 px-3 font-semibold text-[#1E2A24]">
-                            {r.aliquota_icms}%
+                            {formatarValor2Casas(r.aliquota_icms)}%
                           </td>
                           <td className="py-2.5 px-3 text-[#5D6B63]">
-                            {r.reducao_base ? `${r.reducao_base}%` : '0%'}
+                            {formatarValor2Casas(r.reducao_base || 0)}%
                           </td>
                           <td className="py-2.5 px-3 font-semibold text-[#1D6A43]">
                             {r.aliquota_efetiva !== undefined
-                              ? `${r.aliquota_efetiva}%`
-                              : `${(r.aliquota_icms * (1 - (r.reducao_base || 0) / 100)).toFixed(2)}%`}
+                              ? `${formatarValor2Casas(r.aliquota_efetiva)}%`
+                              : `${formatarValor2Casas(r.aliquota_icms * (1 - (r.reducao_base || 0) / 100))}%`}
                           </td>
                           <td className="py-2.5 px-3">
                             {r.diferimento ? (
@@ -750,7 +751,9 @@ export function Regras() {
                                 className="text-[10px] bg-emerald-50 text-emerald-800 border-emerald-300"
                               >
                                 SIM{' '}
-                                {r.percentual_diferimento ? `(${r.percentual_diferimento}%)` : ''}
+                                {r.percentual_diferimento
+                                  ? `(${formatarValor2Casas(r.percentual_diferimento)}%)`
+                                  : ''}
                               </Badge>
                             ) : (
                               <span className="text-slate-400">Não</span>
@@ -885,10 +888,10 @@ export function Regras() {
                       <tr key={p.id} className="hover:bg-[#F7F9F6] transition-colors">
                         <td className="py-2.5 px-3 font-mono font-bold text-[#1D6A43]">{p.ncm}</td>
                         <td className="py-2.5 px-3 font-semibold text-[#1E2A24]">
-                          {p.aliquota_pis}%
+                          {formatarValor2Casas(p.aliquota_pis)}%
                         </td>
                         <td className="py-2.5 px-3 font-semibold text-[#1E2A24]">
-                          {p.aliquota_cofins}%
+                          {formatarValor2Casas(p.aliquota_cofins)}%
                         </td>
                         <td className="py-2.5 px-3">
                           <Badge
@@ -899,10 +902,10 @@ export function Regras() {
                           </Badge>
                         </td>
                         <td className="py-2.5 px-3 text-[#2FA36B] font-semibold">
-                          {p.aliquota_ibs}%
+                          {formatarValor2Casas(p.aliquota_ibs)}%
                         </td>
                         <td className="py-2.5 px-3 text-[#D9534F] font-semibold">
-                          {p.aliquota_cbs}%
+                          {formatarValor2Casas(p.aliquota_cbs)}%
                         </td>
                         <td className="py-2.5 px-3 text-[#5D6B63]">{p.classificacao}</td>
                         <td className="py-2.5 px-3 text-[#5D6B63]">{p.tributacao}</td>
@@ -1105,8 +1108,8 @@ export function Regras() {
                         <td className="py-2.5 px-3 text-[#5D6B63]">{pa.classe || '—'}</td>
                         <td className="py-2.5 px-3 text-[#5D6B63]">{pa.grupo_quimico || '—'}</td>
                         <td className="py-2.5 px-3 text-slate-700">
-                          {pa.concentracao_min || 0} - {pa.concentracao_max || 0}{' '}
-                          {pa.unidade || '%'}
+                          {formatarValor2Casas(pa.concentracao_min || 0)} -{' '}
+                          {formatarValor2Casas(pa.concentracao_max || 0)} {pa.unidade || '%'}
                         </td>
                         <td className="py-2.5 px-3 font-mono font-bold text-[#1D6A43]">
                           {pa.ncm_padrao_referencia || '—'}

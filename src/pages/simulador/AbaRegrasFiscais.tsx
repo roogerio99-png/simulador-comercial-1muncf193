@@ -104,9 +104,9 @@ export function AbaRegrasFiscais({ ativa }: AbaRegrasFiscaisProps) {
   }, [search, carregarDados, hasLoadedOnce, perPage])
 
   const formatarPercentual = (valor?: number) => {
-    if (valor === undefined || valor === null || isNaN(valor)) return '0,0%'
+    if (valor === undefined || valor === null || isNaN(valor)) return '0,00%'
     return `${valor.toLocaleString('pt-BR', {
-      minimumFractionDigits: 1,
+      minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     })}%`
   }
