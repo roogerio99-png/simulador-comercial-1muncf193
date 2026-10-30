@@ -72,7 +72,7 @@ export async function carregarDadosComFallbackPocketBase(baseUrl?: string): Prom
   const url =
     baseUrl ||
     (typeof process !== 'undefined' ? process.env.VITE_POCKETBASE_URL : '') ||
-    'http://127.0.0.1:8090'
+    'https://validacao-de-cadastro-c8eaa.shrd01.internal.goskip.dev'
 
   // Tenta o endpoint export-data-teste
   try {
