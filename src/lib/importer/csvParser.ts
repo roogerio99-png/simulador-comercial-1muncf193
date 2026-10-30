@@ -250,8 +250,8 @@ function findHeaderRowIndex(grid: (string | number | undefined)[][]): number {
 import xlsxAssetUrl from '@/assets/simuladordeoperacoesv3completo-eef50.xlsx?url'
 
 // Helper exportado para inspeção completa da planilha
-export function parseWorkbookBuffer(buf: ArrayBuffer): Record<string, any> {
-  const wb = XLSX.read(new Uint8Array(buf), {
+export function parseWorkbookBuffer(buf: ArrayBuffer | Uint8Array): Record<string, any> {
+  const wb = XLSX.read(buf instanceof Uint8Array ? buf : new Uint8Array(buf), {
     type: 'array',
     cellDates: true,
     raw: false,
@@ -301,7 +301,9 @@ export async function getReferenceSheetRows(): Promise<string[]> {
         rowMap[r].push({ col, ref, v: cells[ref].v, f: cells[ref].f })
       }
     })
-    const sortedRows = Object.keys(rowMap).map(Number).sort((a, b) => a - b)
+    const sortedRows = Object.keys(rowMap)
+      .map(Number)
+      .sort((a, b) => a - b)
     sortedRows.forEach((r) => {
       const rowCells = rowMap[r].sort((a, b) => a.col.localeCompare(b.col))
       const rowDesc = rowCells

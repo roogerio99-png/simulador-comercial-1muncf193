@@ -735,7 +735,9 @@ export function Importador() {
             onClick={async () => {
               try {
                 // Obter asset
-                const xlsxUrl = (await import('@/assets/simuladordeoperacoesv3completo-eef50.xlsx?url')).default
+                const xlsxUrl = (
+                  await import('@/assets/simuladordeoperacoesv3completo-eef50.xlsx?url')
+                ).default
                 const resp = await fetch(xlsxUrl)
                 const blob = await resp.blob()
                 const formData = new FormData()
@@ -778,7 +780,9 @@ export function Importador() {
       {dumpLines && (
         <Card className="p-4 bg-slate-950 text-emerald-400 font-mono text-[11px] max-h-96 overflow-auto border border-emerald-500/30">
           <div className="flex justify-between items-center mb-2 pb-2 border-b border-emerald-800">
-            <span className="font-bold">DUMP DO MODELO CANÔNICO DA PLANILHA (Fórmulas e Rótulos)</span>
+            <span className="font-bold">
+              DUMP DO MODELO CANÔNICO DA PLANILHA (Fórmulas e Rótulos)
+            </span>
             <Button
               variant="ghost"
               size="sm"
