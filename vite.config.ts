@@ -9,7 +9,7 @@ import uidPlugin from './vite-plugin-react-uid'
 export default defineConfig(({ mode }) => ({
   server: {
     host: '::',
-    port: 3000,
+    port: 8080,
   },
   build: {
     outDir: mode === 'development' ? 'dev-dist' : 'dist',
